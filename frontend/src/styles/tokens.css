@@ -1,0 +1,187 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   CRYPTUS design tokens — the single source of every visual decision.
+   Concept: "The Vault". Graphite chambers, a crimson seal, chamfered cuts.
+   Components consume semantic tokens only; raw palette values live here.
+   ───────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* — Palette (raw) — */
+  --obsidian-950: #09090b;
+  --obsidian-900: #0e0e11;
+  --graphite-850: #121216;
+  --graphite-800: #19191f;
+  --graphite-750: #202028;
+  --graphite-700: #2a2a33;
+  --graphite-600: #3a3a45;
+  --ash-400: #92929b;
+  --ash-300: #b4b4bc;
+  --bone-50: #f4f4f5;
+  --crimson-300: #ff6b80;
+  --crimson-400: #f0475f;
+  --crimson-500: #e51d3d;
+  --crimson-600: #c8102e;
+  --crimson-700: #a5122c;
+  --crimson-900: #3d0a14;
+  --jade-400: #20c997;
+  --amber-400: #e8b04a;
+  --rose-400: #e5484d;
+  --steel-400: #7c9cc2;
+
+  /* — Typography — */
+  --font-sans: "Archivo Variable", "Archivo", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  --stretch-display: 118%;   /* expanded display cut */
+  --stretch-label: 125%;     /* engraved micro-labels */
+  --stretch-body: 100%;
+
+  --text-2xs: 0.6875rem;  /* 11 — labels */
+  --text-xs: 0.75rem;     /* 12 */
+  --text-sm: 0.8125rem;   /* 13 — dense UI */
+  --text-md: 0.875rem;    /* 14 — body */
+  --text-lg: 1rem;        /* 16 */
+  --text-xl: 1.25rem;     /* 20 */
+  --text-2xl: 1.625rem;   /* 26 */
+  --text-3xl: 2.125rem;   /* 34 */
+  --text-4xl: 2.75rem;    /* 44 — hero figures */
+
+  --leading-tight: 1.15;
+  --leading-snug: 1.35;
+  --leading-body: 1.55;
+  --tracking-label: 0.14em;
+  --tracking-display: -0.01em;
+
+  /* — Spacing (4px grid) — */
+  --s-0: 2px;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+
+  /* — Geometry: the CRYPTUS cut — */
+  --cut-lg: 14px;
+  --cut-md: 10px;
+  --cut-sm: 6px;
+  --radius-xs: 2px;
+  --hairline: 1px;
+  --control-h: 38px;
+  --control-h-sm: 30px;
+  --sidebar-w: 248px;
+  --content-max: 1280px;
+
+  /* — Motion — */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 420ms;
+
+  /* — Layers — */
+  --z-nav: 20;
+  --z-overlay: 40;
+  --z-dialog: 50;
+  --z-toast: 60;
+}
+
+/* ── Dark (default): the vault ─────────────────────────────────────────── */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: var(--obsidian-950);
+  --bg-sunken: #060607;
+  --surface: var(--graphite-850);
+  --surface-raised: var(--graphite-800);
+  --surface-hover: var(--graphite-750);
+  --surface-active: var(--graphite-700);
+  --overlay: rgba(4, 4, 6, 0.72);
+
+  --line: #24242c;
+  --line-strong: #34343e;
+  --line-focus: var(--crimson-500);
+
+  --fg: var(--bone-50);
+  --fg-secondary: var(--ash-300);
+  --fg-muted: var(--ash-400);
+  --fg-faint: #6a6a73;
+  --fg-on-accent: #ffffff;
+
+  --accent: var(--crimson-500);
+  --accent-strong: var(--crimson-600);   /* fills that carry text: AA with white */
+  --accent-deep: var(--crimson-700);
+  --accent-text: var(--crimson-400);     /* crimson used as text on dark */
+  --accent-wash: rgba(229, 29, 61, 0.1);
+  --accent-glow: rgba(229, 29, 61, 0.22);
+
+  --success: var(--jade-400);
+  --success-wash: rgba(32, 201, 151, 0.1);
+  --warning: var(--amber-400);
+  --warning-wash: rgba(232, 176, 74, 0.1);
+  --danger: var(--rose-400);
+  --danger-wash: rgba(229, 72, 77, 0.12);
+  --info: var(--steel-400);
+  --info-wash: rgba(124, 156, 194, 0.1);
+
+  --shadow-raised: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 32px -12px rgba(0, 0, 0, 0.7);
+  --shadow-dialog: 0 40px 80px -20px rgba(0, 0, 0, 0.85), 0 0 0 1px var(--line-strong);
+  --grid-ink: rgba(255, 255, 255, 0.022);
+  --qr-plate: var(--bone-50);
+}
+
+/* ── Light: "paper ledger" — same structure, inverted chambers ─────────── */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f3f2f0;
+  --bg-sunken: #eae8e5;
+  --surface: #ffffff;
+  --surface-raised: #fbfaf9;
+  --surface-hover: #f1efec;
+  --surface-active: #e8e5e1;
+  --overlay: rgba(20, 18, 18, 0.42);
+
+  --line: #e2dfdb;
+  --line-strong: #cfcbc6;
+  --line-focus: var(--crimson-600);
+
+  --fg: #121216;
+  --fg-secondary: #3a3a45;
+  --fg-muted: #5f5f69;
+  --fg-faint: #8b8b94;
+
+  --accent: var(--crimson-600);
+  --accent-strong: var(--crimson-600);
+  --accent-deep: var(--crimson-700);
+  --accent-text: #b0102b;
+  --accent-wash: rgba(200, 16, 46, 0.07);
+  --accent-glow: rgba(200, 16, 46, 0.14);
+
+  --success: #0c8a64;
+  --success-wash: rgba(12, 138, 100, 0.09);
+  --warning: #9a6a0e;
+  --warning-wash: rgba(154, 106, 14, 0.1);
+  --danger: #c4282d;
+  --danger-wash: rgba(196, 40, 45, 0.08);
+  --info: #3f6390;
+  --info-wash: rgba(63, 99, 144, 0.08);
+
+  --shadow-raised: 0 1px 2px rgba(18, 18, 22, 0.05), 0 12px 28px -16px rgba(18, 18, 22, 0.18);
+  --shadow-dialog: 0 40px 80px -24px rgba(18, 18, 22, 0.35), 0 0 0 1px var(--line-strong);
+  --grid-ink: rgba(18, 18, 22, 0.03);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+  }
+}
+
+/* Breakpoints (reference — CSS custom properties cannot be used in media queries):
+   --bp-sm: 640px   phones → large phones
+   --bp-md: 900px   sidebar collapses below this
+   --bp-lg: 1200px  wide dashboards */
