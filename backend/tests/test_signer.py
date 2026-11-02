@@ -120,3 +120,11 @@ def test_halt_file_stops_everything(policy):
     (policy.path.parent / "HALT").write_text("")
     with pytest.raises(PolicyViolation, match="halted"):
         policy.for_network("eth")
+
+
+def test_signer_exports_btc_xpubs_matching_derivation(ring):
+    for key in ("btc", "btc-testnet"):
+        net = NETWORKS[key]
+        xpub = ring.btc_account_xpub(net)
+        assert xpub[:4] == ("zpub" if key == "btc" else "vpub")
+        derivation.btc_address(xpub, net, 0)  # accepted by the gateway for that network

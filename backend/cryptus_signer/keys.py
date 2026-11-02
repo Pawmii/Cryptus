@@ -42,7 +42,7 @@ class KeyRing:
     # Bitcoin
     def btc_account_xpub(self, net: NetworkDef) -> str:
         acc = self._root.derive(btc_account_path(net)).to_public()
-        ver = BTC_NETWORKS[net.btc_network]["zpub" if net.btc_network == "main" else "vpub"]
+        ver = BTC_NETWORKS[net.btc_network]["zpub"]  # embit maps this to vpub bytes on test networks
         return acc.to_string(version=ver)
 
     # EVM
