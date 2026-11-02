@@ -23,6 +23,7 @@ masterchain block; confirmations = masterchain head − tx mc seqno + 1.
 from __future__ import annotations
 
 import base64
+import time
 
 import httpx
 from pytoniq_core import Address, Cell, begin_cell
@@ -69,10 +70,14 @@ class TonAdapter(ChainAdapter):
         self.headers = {"X-API-Key": k} if (k := conf.credentials.get("api_key")) else {}
 
     def _req(self, method: str, path: str, **kw):
-        try:
-            r = self.http.request(method, self.base + path, headers=self.headers, **kw)
-        except httpx.HTTPError as exc:
-            raise ChainError(f"toncenter unreachable: {exc}") from exc
+        for attempt in range(4):
+            try:
+                r = self.http.request(method, self.base + path, headers=self.headers, **kw)
+            except httpx.HTTPError as exc:
+                raise ChainError(f"toncenter unreachable: {exc}") from exc
+            if r.status_code != 429:
+                break
+            time.sleep(1.1 * (attempt + 1))  # keyless toncenter allows ~1 rps
         if r.status_code == 429:
             raise ChainError("toncenter rate limit reached — configure an API key")
         if r.status_code >= 400:
@@ -183,8 +188,13 @@ class TonAdapter(ChainAdapter):
             if value <= 0:
                 continue
             d = tx.get("description", {})
-            if d.get("bounce") or (d.get("credit_ph") or {}).get("credit") in ("0", 0):
-                continue  # value was bounced back to the sender
+            bounce = d.get("bounce")
+            if isinstance(bounce, dict) and bounce.get("type") == "ok":
+                continue  # value was bounced back to the sender (a failed bounce leaves it with us)
+            credited = int((d.get("credit_ph") or {}).get("credit") or 0)
+            if credited <= 0:
+                continue
+            value = min(value, credited)
             seq = tx.get("mc_block_seqno")
             out.append(Observed(item.deposit_id, b64_to_hex(tx["hash"]), 0, item.asset.id, value, src,
                                 seq, str(tx.get("lt")), head - int(seq) + 1 if seq else 0,
