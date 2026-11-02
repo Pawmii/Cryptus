@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+signer-data/
+*.db
+*.db-wal
+*.db-shm
+.env
+node_modules/
+frontend/dist/
+backend/cryptus/static/
+*.keystore.json
+keystore.json
+secrets/
+.DS_Store
