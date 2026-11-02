@@ -40,12 +40,22 @@ class Settings(BaseSettings):
     worker_interval: float = 10.0
     log_level: str = "INFO"
 
+    # Docker/Kubernetes secrets: read secrets from files instead of the environment.
+    secret_key_file: Path | None = None
+    signer_token_file: Path | None = None
+
     @field_validator("secret_key")
     @classmethod
     def _secret_strength(cls, v: str) -> str:
         if v and len(v) < 32:
             raise ValueError("CRYPTUS_SECRET_KEY must be at least 32 characters")
         return v
+
+    def model_post_init(self, __context) -> None:
+        if not self.secret_key and self.secret_key_file:
+            self.secret_key = self._secret_strength(self.secret_key_file.read_text().strip())
+        if not self.signer_token and self.signer_token_file:
+            self.signer_token = self.signer_token_file.read_text().strip()
 
     @property
     def is_production(self) -> bool:

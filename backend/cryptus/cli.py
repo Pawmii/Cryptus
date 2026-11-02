@@ -35,8 +35,9 @@ def main(argv: list[str] | None = None) -> None:
         print("database is up to date")
     elif a.cmd == "serve":
         import uvicorn
-        uvicorn.run("cryptus.app:app", host=a.host, port=a.port, workers=a.workers, proxy_headers=True,
-                    forwarded_allow_ips="*", access_log=False)
+        # Forwarded headers are evaluated by the app against CRYPTUS_TRUSTED_PROXIES, never blindly here.
+        uvicorn.run("cryptus.app:app", host=a.host, port=a.port, workers=a.workers, proxy_headers=False,
+                    access_log=False)
     elif a.cmd == "worker":
         from .worker import main as wmain
         wmain()

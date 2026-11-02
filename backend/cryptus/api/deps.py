@@ -20,17 +20,31 @@ ROLES = {"viewer": 0, "operator": 1, "admin": 2, "owner": 3}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
+def _is_trusted(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for entry in get_settings().trusted_proxies:
+        try:
+            if addr in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def client_ip(request: Request) -> str:
+    """Client address, honouring X-Forwarded-For only when it was set by a trusted proxy."""
     peer = request.client.host if request.client else "0.0.0.0"
-    trusted = get_settings().trusted_proxies
     xff = request.headers.get("x-forwarded-for")
-    if xff and peer in trusted:
+    if xff and _is_trusted(peer):
         for hop in reversed([h.strip() for h in xff.split(",")]):
             try:
                 ipaddress.ip_address(hop)
             except ValueError:
                 continue
-            if hop not in trusted:
+            if not _is_trusted(hop):
                 return hop
     return peer
 

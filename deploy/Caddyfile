@@ -1,0 +1,19 @@
+{$CRYPTUS_DOMAIN} {
+	encode zstd gzip
+
+	# The console API and docs are operator-only. Restrict by source address if you can:
+	# @console not remote_ip 203.0.113.0/24
+	# respond @console /api/admin/* 403
+
+	request_body {
+		max_size 1MB
+	}
+
+	reverse_proxy web:8000 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	header {
+		-Server
+	}
+}

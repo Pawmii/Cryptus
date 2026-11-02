@@ -1,0 +1,30 @@
+{
+  "halted": false,
+  "networks": {
+    "btc": {
+      "allowlist": ["bc1q-your-cold-storage-address"],
+      "max_fee": "0.0005",
+      "max_feerate_sat_vb": 300,
+      "daily_limits": { "btc:native": "500000000" }
+    },
+    "eth": {
+      "allowlist": ["0xYourPrimaryWallet"],
+      "max_fee": "0.01",
+      "max_gas_topup": "0.004",
+      "tokens": [
+        "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+        "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+      ],
+      "daily_limits": {
+        "eth:native": "5000000000000000000",
+        "eth:erc20:0xdAC17F958D2ee523a2206206994597C13D831ec7": "100000000000"
+      }
+    },
+    "ton": {
+      "allowlist": ["UQ-your-primary-ton-wallet"],
+      "max_gas_topup": "0.2",
+      "max_jetton_attach": "0.1",
+      "daily_limits": { "ton:jetton:*": "100000000000" }
+    }
+  }
+}

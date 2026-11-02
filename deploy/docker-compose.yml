@@ -1,0 +1,125 @@
+# CRYPTUS production stack.
+#
+#   cp deploy/.env.example deploy/.env      # then edit
+#   ./deploy/init-secrets.sh                 # generates secret files
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
+#
+# Network layout
+#   edge     : caddy ⇄ web                     (only caddy publishes ports)
+#   backend  : web, worker ⇄ postgres
+#   signing  : web, worker ⇄ signer            (internal: no internet egress for the signer)
+#   chains   : worker/web outbound to blockchain endpoints
+#
+# The signer never joins the backend network and never sees the database.
+
+name: cryptus
+
+x-gateway: &gateway
+  image: cryptus:${CRYPTUS_VERSION:-latest}
+  build: { context: .., dockerfile: Dockerfile }
+  restart: unless-stopped
+  environment:
+    CRYPTUS_ENV: production
+    CRYPTUS_DATABASE_URL: postgresql+psycopg://cryptus:${POSTGRES_PASSWORD}@postgres:5432/cryptus
+    CRYPTUS_SECRET_KEY_FILE: /run/secrets/cryptus_secret_key
+    CRYPTUS_PUBLIC_URL: https://${CRYPTUS_DOMAIN}
+    CRYPTUS_TRUSTED_PROXIES: '["172.16.0.0/12"]'
+    CRYPTUS_SIGNER_URL: ${CRYPTUS_SIGNER_URL:-}
+    CRYPTUS_SIGNER_TOKEN_FILE: /run/secrets/signer_token
+  secrets: [cryptus_secret_key, signer_token]
+  volumes: [gateway-data:/data]
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  depends_on:
+    migrate: { condition: service_completed_successfully }
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cryptus
+      POSTGRES_USER: cryptus
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: [pg-data:/var/lib/postgresql/data]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cryptus -d cryptus"]
+      interval: 5s
+      retries: 20
+
+  migrate:
+    <<: *gateway
+    restart: "no"
+    command: ["cryptus", "migrate"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [backend]
+
+  web:
+    <<: *gateway
+    networks: [edge, backend, signing, chains]
+
+  worker:
+    <<: *gateway
+    command: ["cryptus", "worker"]
+    healthcheck: { disable: true }
+    networks: [backend, signing, chains]
+
+  signer:
+    image: cryptus:${CRYPTUS_VERSION:-latest}
+    profiles: ["managed-signing"]
+    restart: unless-stopped
+    command: ["cryptus-signer", "serve", "--keystore", "/signer/keystore.json", "--policy", "/signer/policy.json",
+              "--data-dir", "/signer/data", "--host", "0.0.0.0", "--port", "8700"]
+    environment:
+      CRYPTUS_SIGNER_PASSPHRASE_FILE: /run/secrets/signer_passphrase
+      CRYPTUS_SIGNER_TOKEN_FILE: /run/secrets/signer_token
+    secrets: [signer_passphrase, signer_token]
+    volumes:
+      - ./signer:/signer
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [signing]
+    healthcheck: { disable: true }
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      CRYPTUS_DOMAIN: ${CRYPTUS_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    networks: [edge]
+    depends_on: [web]
+
+  bitcoind:
+    image: bitcoin/bitcoin:28.1
+    profiles: ["bitcoind"]
+    restart: unless-stopped
+    command: ["-server=1", "-rpcbind=0.0.0.0", "-rpcallowip=172.16.0.0/12", "-rpcuser=${BITCOIND_RPC_USER}",
+              "-rpcpassword=${BITCOIND_RPC_PASSWORD}", "-txindex=0", "-prune=0", "-disablewallet=0"]
+    volumes: [bitcoind-data:/home/bitcoin/.bitcoin]
+    networks: [chains]
+
+networks:
+  edge: {}
+  backend: { internal: true }
+  signing: { internal: true }
+  chains: {}
+
+volumes:
+  pg-data: {}
+  gateway-data: {}
+  caddy-data: {}
+  bitcoind-data: {}
+
+secrets:
+  cryptus_secret_key: { file: ./secrets/cryptus_secret_key }
+  signer_token: { file: ./secrets/signer_token }
+  signer_passphrase: { file: ./secrets/signer_passphrase }

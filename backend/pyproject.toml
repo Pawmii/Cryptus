@@ -6,7 +6,6 @@ build-backend = "setuptools.build_meta"
 name = "cryptus"
 version = "1.0.0"
 description = "CRYPTUS — self-hosted, non-custodial cryptocurrency payment gateway"
-readme = "../README.md"
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }
 dependencies = [
