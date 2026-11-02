@@ -128,10 +128,13 @@ def initialize(body: CompleteIn, request: Request, response: Response, db: Sessi
                  password_hash=hash_password(body.owner.password))
     db.add(owner)
     db.flush()
-    settings_svc.put(db, "business", {"name": body.business.name.strip(), "website": body.business.website.strip(),
-                                      "support_email": body.business.support_email.strip()})
-    settings_svc.put(db, "invoice", {"default_currency": body.business.default_currency.upper(),
-                                     "default_expiry_minutes": body.business.default_expiry_minutes})
+    try:
+        settings_svc.put(db, "business", {"name": body.business.name.strip(), "website": body.business.website.strip(),
+                                          "support_email": body.business.support_email.strip()})
+        settings_svc.put(db, "invoice", {"default_currency": body.business.default_currency.upper(),
+                                         "default_expiry_minutes": body.business.default_expiry_minutes})
+    except settings_svc.SettingsError as exc:
+        raise HTTPException(400, str(exc)) from exc
     infra.seed_assets(db)
     settings_svc.put(db, "setup", {"completed": True, "completed_at": utcnow().isoformat()})
     from .deps import client_ip

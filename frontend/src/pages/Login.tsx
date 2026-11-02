@@ -6,6 +6,21 @@ import { AuthArt } from "../layouts/AuthArt";
 import { api, setCsrf } from "../lib/api";
 import { useSession, type User } from "../lib/session";
 
+/** Only same-origin app paths: no "//host", no backslashes, no whitespace/control characters, no schemes. */
+export function safeNext(next: string | null): string {
+  if (!next || next[0] !== "/" || next[1] === "/") return "/";
+  for (let i = 0; i < next.length; i++) {
+    const c = next.charCodeAt(i);
+    if (c === 0x5c || c <= 0x20 || c === 0x7f) return "/";
+  }
+  try {
+    const u = new URL(next, window.location.origin);
+    return u.origin === window.location.origin ? u.pathname + u.search + u.hash : "/";
+  } catch {
+    return "/";
+  }
+}
+
 export function Login() {
   const { setSession } = useSession();
   const nav = useNavigate();
@@ -17,7 +32,7 @@ export function Login() {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const next = params.get("next");
-  const dest = next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+  const dest = safeNext(next);
 
   async function submit(e: FormEvent) {
     e.preventDefault();

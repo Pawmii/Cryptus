@@ -82,6 +82,13 @@ def _upsert(db: Session, o: Observed, network_key: str, required: int) -> tuple[
     if p.status in ("pending", "confirmed"):
         p.confirmations = max(p.confirmations, o.confirmations) if o.block_hash == p.block_hash else o.confirmations
         p.block_number, p.block_hash = o.block_number, o.block_hash
+    elif p.status == "orphaned" and not rejected:
+        # Re-included in the canonical chain after a reorg (or re-broadcast): bring it back.
+        p.status = "confirmed" if o.confirmations >= required else "pending"
+        p.confirmations, p.block_number, p.block_hash = o.confirmations, o.block_number, o.block_hash
+        p.confirmed_at = utcnow() if p.status == "confirmed" else None
+        p.detail = {**(p.detail or {}), "reincluded_at": utcnow().isoformat()}
+        return p, True
     return p, False
 
 
@@ -133,10 +140,13 @@ def _refresh(db: Session, adapter, network_key: str, required: int) -> set[str]:
     return touched
 
 
-def _reconcile_evm_native(db: Session, adapter: EvmAdapter, network_key: str, required: int, head: int) -> set[str]:
+def _reconcile_evm_native(db: Session, adapter: EvmAdapter, network_key: str, required: int, head: int,
+                          scanned_to: int | None) -> set[str]:
     touched: set[str] = set()
     safe_block = head - required + 1
-    if safe_block <= 0:
+    # Only reconcile blocks the transaction scan has already covered; otherwise a payment the scan has not
+    # reached yet would be credited here *and* again when the scan finds it.
+    if safe_block <= 0 or scanned_to is None or scanned_to < safe_block:
         return touched
     deps = db.execute(select(DepositAddress).join(Invoice, Invoice.id == DepositAddress.invoice_id).where(
         DepositAddress.network == network_key, DepositAddress.asset_id == f"{network_key}:native",
@@ -210,7 +220,8 @@ def run_network(db: Session, network_key: str) -> dict:
             pass
     touched |= _refresh(db, adapter, network_key, required)
     if isinstance(adapter, EvmAdapter) and head is not None:
-        touched |= _reconcile_evm_native(db, adapter, network_key, required, head)
+        touched |= _reconcile_evm_native(db, adapter, network_key, required, head,
+                                         (nc.scan_cursor or {}).get("block"))
     for inv_id in touched:
         inv = db.get(Invoice, inv_id)
         if inv:

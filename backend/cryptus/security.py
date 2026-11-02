@@ -121,6 +121,21 @@ def totp_uri(secret: str, email: str) -> str:
     return pyotp.TOTP(secret).provisioning_uri(name=email, issuer_name="CRYPTUS")
 
 
-def verify_totp(secret: str, code: str) -> bool:
+def totp_step(secret: str, code: str) -> int | None:
+    """Return the time step a code is valid for (±1 step of drift), or None. Callers reject reused steps."""
+    import time
+
     code = code.strip().replace(" ", "")
-    return code.isdigit() and pyotp.TOTP(secret).verify(code, valid_window=1)
+    if not (code.isdigit() and len(code) == 6):
+        return None
+    totp = pyotp.TOTP(secret)
+    now = int(time.time())
+    for drift in (0, -1, 1):
+        t = now + drift * totp.interval
+        if hmac.compare_digest(totp.at(t), code):
+            return t // totp.interval
+    return None
+
+
+def verify_totp(secret: str, code: str) -> bool:
+    return totp_step(secret, code) is not None

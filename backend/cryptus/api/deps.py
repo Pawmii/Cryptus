@@ -88,9 +88,13 @@ def current_mfa_pending(request: Request, db: Session = Depends(get_db)) -> Prin
 
 
 def require(role: str):
-    def dep(p: Principal = Depends(current)) -> Principal:
+    def dep(p: Principal = Depends(current), db: Session = Depends(get_db)) -> Principal:
         if ROLES.get(p.user.role, -1) < ROLES[role]:
             raise HTTPException(403, f"requires {role} role")
+        if p.user.role in ("admin", "owner") and not p.user.totp_enabled:
+            from ..services import settings as settings_svc
+            if settings_svc.get(db, "security").get("require_mfa_for_admins"):
+                raise HTTPException(403, "two-factor authentication is required for your role — enable it on your account page")
         return p
     return dep
 

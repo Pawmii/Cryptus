@@ -7,6 +7,9 @@ by ticker alone:
     <network>:erc20:<checksummed contract address>
     <network>:jetton:<raw jetton master address, e.g. 0:b113…>
 
+Testnet coins borrow their mainnet counterpart's price source so fiat-priced test-mode invoices can be
+quoted; the coins themselves remain valueless.
+
 Tickers are display metadata only. Two assets may share a ticker (for example
 the native GRAM coin of TON and unrelated third-party tokens that also call
 themselves "GRAM"); they never share a canonical id.
@@ -82,7 +85,7 @@ _NETWORKS: list[NetworkDef] = [
                default_confirmations=2, block_time=600,
                explorer_tx="https://mempool.space/tx/{txid}",
                explorer_address="https://mempool.space/address/{address}", btc_network="main"),
-    NetworkDef("btc-testnet", "bitcoin", "Bitcoin Testnet", "testnet", "implemented", "tBTC", "Test Bitcoin", 8, None,
+    NetworkDef("btc-testnet", "bitcoin", "Bitcoin Testnet", "testnet", "implemented", "tBTC", "Test Bitcoin", 8, "bitcoin",
                default_confirmations=1, block_time=600,
                explorer_tx="https://mempool.space/testnet4/tx/{txid}",
                explorer_address="https://mempool.space/testnet4/address/{address}", btc_network="test"),
@@ -92,7 +95,7 @@ _NETWORKS: list[NetworkDef] = [
                explorer_tx="https://tonviewer.com/transaction/{txid}",
                explorer_address="https://tonviewer.com/{address}",
                tokens=(AssetDef("ton", "jetton", "USDT", "Tether USD (Jetton)", 6, TON_USDT_MASTER_RAW, "tether"),)),
-    NetworkDef("ton-testnet", "ton", "TON Testnet", "testnet", "implemented", "tGRAM", "Test GRAM", 9, None,
+    NetworkDef("ton-testnet", "ton", "TON Testnet", "testnet", "implemented", "tGRAM", "Test GRAM", 9, "the-open-network",
                default_confirmations=1, block_time=5,
                explorer_tx="https://testnet.tonviewer.com/transaction/{txid}",
                explorer_address="https://testnet.tonviewer.com/{address}", ton_testnet=True),
@@ -131,23 +134,23 @@ _NETWORKS: list[NetworkDef] = [
                tokens=(
                    _erc20("base", "USDC", "USD Coin", 6, "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "usd-coin"),
                )),
-    NetworkDef("eth-sepolia", "evm", "Ethereum Sepolia", "testnet", "implemented", "SepoliaETH", "Sepolia Ether", 18, None,
+    NetworkDef("eth-sepolia", "evm", "Ethereum Sepolia", "testnet", "implemented", "SepoliaETH", "Sepolia Ether", 18, "ethereum",
                default_confirmations=3, block_time=12, chain_id=11155111,
                explorer_tx="https://sepolia.etherscan.io/tx/{txid}",
                explorer_address="https://sepolia.etherscan.io/address/{address}"),
-    NetworkDef("bsc-testnet", "evm", "BNB Smart Chain Testnet", "testnet", "implemented", "tBNB", "Test BNB", 18, None,
+    NetworkDef("bsc-testnet", "evm", "BNB Smart Chain Testnet", "testnet", "implemented", "tBNB", "Test BNB", 18, "binancecoin",
                default_confirmations=3, block_time=0.75, chain_id=97,
                explorer_tx="https://testnet.bscscan.com/tx/{txid}",
                explorer_address="https://testnet.bscscan.com/address/{address}"),
-    NetworkDef("polygon-amoy", "evm", "Polygon Amoy", "testnet", "implemented", "POL", "Test POL", 18, None,
+    NetworkDef("polygon-amoy", "evm", "Polygon Amoy", "testnet", "implemented", "POL", "Test POL", 18, "polygon-ecosystem-token",
                default_confirmations=3, block_time=2, chain_id=80002,
                explorer_tx="https://amoy.polygonscan.com/tx/{txid}",
                explorer_address="https://amoy.polygonscan.com/address/{address}"),
-    NetworkDef("arbitrum-sepolia", "evm", "Arbitrum Sepolia", "testnet", "implemented", "ETH", "Sepolia Ether", 18, None,
+    NetworkDef("arbitrum-sepolia", "evm", "Arbitrum Sepolia", "testnet", "implemented", "ETH", "Sepolia Ether", 18, "ethereum",
                default_confirmations=3, block_time=0.25, chain_id=421614,
                explorer_tx="https://sepolia.arbiscan.io/tx/{txid}",
                explorer_address="https://sepolia.arbiscan.io/address/{address}"),
-    NetworkDef("base-sepolia", "evm", "Base Sepolia", "testnet", "implemented", "ETH", "Sepolia Ether", 18, None,
+    NetworkDef("base-sepolia", "evm", "Base Sepolia", "testnet", "implemented", "ETH", "Sepolia Ether", 18, "ethereum",
                default_confirmations=3, block_time=2, chain_id=84532,
                explorer_tx="https://sepolia.basescan.org/tx/{txid}",
                explorer_address="https://sepolia.basescan.org/address/{address}"),

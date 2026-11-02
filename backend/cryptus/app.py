@@ -40,6 +40,9 @@ async def lifespan(app: FastAPI):
         upgrade()
     with session_scope() as db:
         setup.ensure_setup_token(db)
+        from .services import infra, settings as settings_svc
+        if settings_svc.setup_completed(db):
+            infra.seed_assets(db)  # idempotent: adds built-in assets introduced by upgrades
     yield
 
 
@@ -73,8 +76,10 @@ def create_app() -> FastAPI:
         return JSONResponse({"detail": errs[0]["message"] if errs else "invalid request", "errors": errs},
                             status_code=422)
 
-    for r in (auth.router, setup.router, admin.router, merchant.router, public.router):
-        app.include_router(r)
+    # The public API reference documents the merchant API; console/setup endpoints stay out of it in production.
+    for r in (auth.router, setup.router, admin.router, public.router):
+        app.include_router(r, include_in_schema=not s.is_production)
+    app.include_router(merchant.router)
 
     @app.get("/healthz", include_in_schema=False)
     def healthz():

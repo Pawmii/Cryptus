@@ -17,11 +17,11 @@ Safety rules (enforced here *and* independently by the signer):
 """
 from __future__ import annotations
 
+import base64
 import logging
 from datetime import timedelta
-from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..chains.base import ChainError
@@ -30,12 +30,12 @@ from ..chains.evm import EvmAdapter
 from ..chains.registry import adapter_for
 from ..chains.ton import TonAdapter
 from ..core import evm_abi, ton_wallet
-from ..core.derivation import evm_address, evm_gas_station, normalize_address, ton_gas_wallet, ton_subwallet_id, \
+from ..core.derivation import evm_gas_station, normalize_address, ton_gas_wallet, ton_subwallet_id, \
     TON_DEFAULT_SUBWALLET
 from ..core.money import fmt_atomic, to_atomic
 from ..core.networks import NETWORKS
 from ..db import utcnow
-from ..models import Asset, DepositAddress, Invoice, Keychain, NetworkWallet, Sweep
+from ..models import Asset, DepositAddress, Invoice, Keychain, NetworkWallet, Payment, Sweep
 from . import audit, settings as settings_svc, signer_client
 from .invoices import asset_info, required_confirmations
 from .webhooks import emit
@@ -81,31 +81,61 @@ def destination_ok(db: Session, nw: NetworkWallet, kc: Keychain) -> tuple[bool, 
 
 
 def _eligible_deposits(db: Session, network: str) -> list[DepositAddress]:
+    """Deposits holding confirmed, not-yet-swept value whose invoice is settled (or past its late window).
+
+    Only deposits with a confirmed payment newer than their last sweep qualify, so unpaid addresses are never
+    polled again and value that arrives after a sweep is still collected."""
     now = utcnow()
     busy = set()
     for s in db.execute(select(Sweep).where(Sweep.network == network, Sweep.status.in_(ACTIVE))).scalars():
         busy.update(s.deposit_ids or [])
+    last_paid = (select(Payment.deposit_id, func.max(Payment.confirmed_at).label("at"))
+                 .where(Payment.network == network, Payment.status == "confirmed")
+                 .group_by(Payment.deposit_id).subquery())
+    q = (select(DepositAddress, Invoice, last_paid.c.at)
+         .join(Invoice, Invoice.id == DepositAddress.invoice_id)
+         .join(last_paid, last_paid.c.deposit_id == DepositAddress.id)
+         .where(DepositAddress.network == network))
     out = []
-    q = select(DepositAddress, Invoice).join(Invoice, Invoice.id == DepositAddress.invoice_id).where(
-        DepositAddress.network == network, DepositAddress.swept_at.is_(None))
-    for d, inv in db.execute(q).all():
-        if d.id in busy:
+    for d, inv, paid_at in db.execute(q).all():
+        if d.id in busy or (d.swept_at and paid_at and paid_at <= d.swept_at):
             continue
         if inv.status == "paid" or (inv.status in ("expired", "underpaid", "cancelled") and d.monitor_until < now):
             out.append(d)
     return out
 
 
-def _new(db: Session, **kw) -> Sweep | None:
-    key = kw["idempotency_key"]
-    if db.execute(select(Sweep.id).where(Sweep.idempotency_key == key)).first():
-        return None
-    s = Sweep(status="planned", **kw)
-    db.add(s)
-    db.flush()
-    audit.record(db, audit.SYSTEM, "sweep.planned", s.id, network=s.network, asset=s.asset_id, amount=s.amount,
-                 kind=s.kind, destination=s.destination)
-    return s
+class _Batch:
+    """Collects sweep specs while the chain is queried; rows (and audit entries, which take the audit-chain
+    lock) are written only at the end so no lock is held across network calls."""
+
+    def __init__(self, db: Session):
+        self.db = db
+        self.specs: list[dict] = []
+
+    def add(self, **kw) -> str | None:
+        key = kw["idempotency_key"]
+        if any(x["idempotency_key"] == key for x in self.specs):
+            return key
+        if self.db.execute(select(Sweep.id).where(Sweep.idempotency_key == key)).first():
+            return key  # already planned earlier; dependants still link to it
+        self.specs.append(kw)
+        return key
+
+    def commit(self) -> list[Sweep]:
+        out: list[Sweep] = []
+        for kw in self.specs:
+            dep_key = kw.pop("depends_on_key", None)
+            dep_id = None
+            if dep_key:
+                dep_id = self.db.execute(select(Sweep.id).where(Sweep.idempotency_key == dep_key)).scalar_one_or_none()
+            s = Sweep(status="planned", depends_on=dep_id, **kw)
+            self.db.add(s)
+            self.db.flush()
+            audit.record(self.db, audit.SYSTEM, "sweep.planned", s.id, network=s.network, asset=s.asset_id,
+                         amount=s.amount, kind=s.kind, destination=s.destination)
+            out.append(s)
+        return out
 
 
 # ── Planning ──────────────────────────────────────────────────────────────
@@ -128,14 +158,15 @@ def plan(db: Session, network: str, *, force: bool = False) -> list[Sweep]:
     if not deps:
         return []
     adapter = adapter_for(db, network)
+    batch = _Batch(db)
     fam = NETWORKS[network].family
     if fam == "bitcoin":
-        return _plan_btc(db, adapter, nw, kc, deps)
-    if fam == "evm":
-        return _plan_evm(db, adapter, nw, kc, deps)
-    if fam == "ton":
-        return _plan_ton(db, adapter, nw, kc, deps)
-    return []
+        _plan_btc(db, batch, adapter, nw, kc, deps)
+    elif fam == "evm":
+        _plan_evm(db, batch, adapter, nw, kc, deps)
+    elif fam == "ton":
+        _plan_ton(db, batch, adapter, nw, kc, deps)
+    return batch.commit()
 
 
 def _threshold(nw: NetworkWallet, asset: Asset) -> int:
@@ -143,14 +174,14 @@ def _threshold(nw: NetworkWallet, asset: Asset) -> int:
     return to_atomic(t, asset.decimals) if t else 1
 
 
-def _plan_btc(db, adapter: BitcoinAdapter, nw, kc, deps) -> list[Sweep]:
+def _plan_btc(db, batch: _Batch, adapter: BitcoinAdapter, nw, kc, deps) -> None:
     net = NETWORKS[nw.network]
     asset = db.get(Asset, f"{nw.network}:native")
     idx = {d.display_address: d.derivation_index for d in deps}
     by_addr = {d.display_address: d for d in deps}
     utxos = adapter.utxos(list(idx), required_confirmations(db, nw.network))
     if not utxos or sum(u["value"] for u in utxos) < _threshold(nw, asset):
-        return []
+        return
     feerate = adapter.feerate_sat_vb(int(nw.max_fee.get("target_blocks", 6)) if nw.max_fee else 6)
     if not kc.master_fingerprint or not kc.account_path:
         raise SweepError("keychain lacks master fingerprint / account path required for PSBT signing")
@@ -161,21 +192,19 @@ def _plan_btc(db, adapter: BitcoinAdapter, nw, kc, deps) -> list[Sweep]:
     cap = _fee_cap(db, nw, net)
     if cap is not None and fee > cap:
         log.warning("%s: sweep fee %s exceeds cap %s", nw.network, fee, cap)
-        return []
+        return
     used = sorted({by_addr[u["address"]].id for u in utxos})
     key = f"{nw.network}:btc:" + ",".join(sorted(f"{u['txid']}:{u['vout']}" for u in utxos))
-    s = _new(db, network=nw.network, asset_id=asset.id, kind="sweep", deposit_ids=used, destination=nw.destination,
-             amount=str(amount), fee_estimate=str(fee), idempotency_key=key,
-             artifact={"psbt": psbt, "feerate_sat_vb": feerate, "inputs": len(utxos)})
-    return [s] if s else []
+    batch.add(network=nw.network, asset_id=asset.id, kind="sweep", deposit_ids=used, destination=nw.destination,
+              amount=str(amount), fee_estimate=str(fee), idempotency_key=key,
+              artifact={"psbt": psbt, "feerate_sat_vb": feerate, "inputs": len(utxos)})
 
 
-def _plan_evm(db, adapter: EvmAdapter, nw, kc, deps) -> list[Sweep]:
+def _plan_evm(db, batch: _Batch, adapter: EvmAdapter, nw, kc, deps) -> None:
     net = NETWORKS[nw.network]
     fees = adapter.fee_params()
     price = fees.get("maxFeePerGas") or fees["gasPrice"]
     cap = _fee_cap(db, nw, net)
-    out: list[Sweep] = []
     native_asset = db.get(Asset, f"{nw.network}:native")
     gas_station = evm_gas_station(kc.public_material).address
     for d in deps:
@@ -188,55 +217,47 @@ def _plan_evm(db, adapter: EvmAdapter, nw, kc, deps) -> list[Sweep]:
                 continue
             tx = {"from": d.display_address, "to": nw.destination, "value": amount, "data": "0x",
                   "gas": EVM_GAS_NATIVE, "chainId": net.chain_id, **fees}
-            s = _new(db, network=nw.network, asset_id=asset.id, kind="sweep", deposit_ids=[d.id],
-                     source_address=d.display_address, destination=nw.destination, amount=str(amount),
-                     fee_estimate=str(cost), idempotency_key=f"{nw.network}:native:{d.id}:{bal}",
-                     artifact={"tx": tx, "role": "deposit", "index": d.derivation_index,
-                               "intent": {"type": "sweep_native", "destination": nw.destination, "amount": amount}})
-        else:
-            bal = adapter.balance(d.address, asset_info(asset))
-            if bal <= 0 or bal < _threshold(nw, asset):
-                continue
-            data = evm_abi.encode_transfer(nw.destination, bal)
-            try:
-                gas = int(adapter.estimate_gas({"from": d.display_address, "to": asset.contract, "data": data}) * 1.25)
-            except ChainError:
-                gas = EVM_GAS_TOKEN_FALLBACK
-            cost = gas * price
-            if cap is not None and cost > cap:
-                continue
-            have = adapter.balance(d.address, asset_info(native_asset))
-            topup = None
-            if have < cost:
-                need = cost - have
-                topup = _new(db, network=nw.network, asset_id=native_asset.id, kind="gas_topup", deposit_ids=[d.id],
-                             source_address=gas_station, destination=d.display_address, amount=str(need),
-                             fee_estimate=str(EVM_GAS_NATIVE * price),
-                             idempotency_key=f"{nw.network}:gas:{d.id}:{bal}:{have}",
-                             artifact={"tx": {"from": gas_station, "to": d.display_address, "value": need,
-                                              "data": "0x", "gas": EVM_GAS_NATIVE, "chainId": net.chain_id, **fees},
-                                       "role": "gas_station", "index": 0,
-                                       "intent": {"type": "gas_topup", "recipient_index": d.derivation_index,
-                                                  "amount": need}})
-                if topup:
-                    out.append(topup)
-            s = _new(db, network=nw.network, asset_id=asset.id, kind="sweep", deposit_ids=[d.id],
-                     source_address=d.display_address, destination=nw.destination, amount=str(bal),
-                     fee_estimate=str(cost), idempotency_key=f"{nw.network}:token:{d.id}:{bal}",
-                     depends_on=topup.id if topup else None,
-                     artifact={"tx": {"from": d.display_address, "to": asset.contract, "value": 0, "data": data,
-                                      "gas": gas, "chainId": net.chain_id},
-                               "role": "deposit", "index": d.derivation_index,
-                               "intent": {"type": "sweep_token", "token": asset.contract,
-                                          "destination": nw.destination, "amount": bal}})
-        if s:
-            out.append(s)
-    return out
+            batch.add(network=nw.network, asset_id=asset.id, kind="sweep", deposit_ids=[d.id],
+                      source_address=d.display_address, destination=nw.destination, amount=str(amount),
+                      fee_estimate=str(cost), idempotency_key=f"{nw.network}:native:{d.id}:{bal}",
+                      artifact={"tx": tx, "role": "deposit", "index": d.derivation_index,
+                                "intent": {"type": "sweep_native", "destination": nw.destination, "amount": amount}})
+            continue
+        bal = adapter.balance(d.address, asset_info(asset))
+        if bal <= 0 or bal < _threshold(nw, asset):
+            continue
+        data = evm_abi.encode_transfer(nw.destination, bal)
+        try:
+            gas = int(adapter.estimate_gas({"from": d.display_address, "to": asset.contract, "data": data}) * 1.25)
+        except ChainError:
+            gas = EVM_GAS_TOKEN_FALLBACK
+        cost = gas * price
+        if cap is not None and cost > cap:
+            continue
+        have = adapter.balance(d.address, asset_info(native_asset))
+        topup_key = None
+        if have < cost:
+            need = cost - have
+            topup_key = batch.add(
+                network=nw.network, asset_id=native_asset.id, kind="gas_topup", deposit_ids=[d.id],
+                source_address=gas_station, destination=d.display_address, amount=str(need),
+                fee_estimate=str(EVM_GAS_NATIVE * price), idempotency_key=f"{nw.network}:gas:{d.id}:{bal}:{have}",
+                artifact={"tx": {"from": gas_station, "to": d.display_address, "value": need, "data": "0x",
+                                 "gas": EVM_GAS_NATIVE, "chainId": net.chain_id, **fees},
+                          "role": "gas_station", "index": 0,
+                          "intent": {"type": "gas_topup", "recipient_index": d.derivation_index, "amount": need}})
+        batch.add(network=nw.network, asset_id=asset.id, kind="sweep", deposit_ids=[d.id],
+                  source_address=d.display_address, destination=nw.destination, amount=str(bal),
+                  fee_estimate=str(cost), idempotency_key=f"{nw.network}:token:{d.id}:{bal}", depends_on_key=topup_key,
+                  artifact={"tx": {"from": d.display_address, "to": asset.contract, "value": 0, "data": data,
+                                   "gas": gas, "chainId": net.chain_id},
+                            "role": "deposit", "index": d.derivation_index,
+                            "intent": {"type": "sweep_token", "token": asset.contract,
+                                       "destination": nw.destination, "amount": bal}})
 
 
-def _plan_ton(db, adapter: TonAdapter, nw, kc, deps) -> list[Sweep]:
+def _plan_ton(db, batch: _Batch, adapter: TonAdapter, nw, kc, deps) -> None:
     net = NETWORKS[nw.network]
-    out: list[Sweep] = []
     gas = ton_gas_wallet(kc.public_material, net)
     for d in deps:
         asset = db.get(Asset, d.asset_id)
@@ -244,14 +265,12 @@ def _plan_ton(db, adapter: TonAdapter, nw, kc, deps) -> list[Sweep]:
         if asset.kind == "native":
             if st["balance"] < max(TON_NATIVE_MIN, _threshold(nw, asset)):
                 continue
-            s = _new(db, network=nw.network, asset_id=asset.id, kind="sweep", deposit_ids=[d.id],
-                     source_address=d.display_address, destination=nw.destination, amount=str(st["balance"]),
-                     fee_estimate="10000000", idempotency_key=f"{nw.network}:native:{d.id}:{st['balance']}",
-                     artifact={"role": "deposit", "index": d.derivation_index,
-                               "subwallet_id": ton_subwallet_id(d.derivation_index),
-                               "intent": {"type": "sweep_native", "destination": nw.destination}})
-            if s:
-                out.append(s)
+            batch.add(network=nw.network, asset_id=asset.id, kind="sweep", deposit_ids=[d.id],
+                      source_address=d.display_address, destination=nw.destination, amount=str(st["balance"]),
+                      fee_estimate="10000000", idempotency_key=f"{nw.network}:native:{d.id}:{st['balance']}",
+                      artifact={"role": "deposit", "index": d.derivation_index,
+                                "subwallet_id": ton_subwallet_id(d.derivation_index),
+                                "intent": {"type": "sweep_native", "destination": nw.destination}})
             continue
         bal = adapter.balance(d.display_address, asset_info(asset), d.meta)
         if bal <= 0 or bal < _threshold(nw, asset):
@@ -260,29 +279,23 @@ def _plan_ton(db, adapter: TonAdapter, nw, kc, deps) -> list[Sweep]:
         if not jw or not (d.meta or {}).get("jetton_wallet_verified"):
             log.warning("TON deposit %s: jetton wallet not verified — not sweeping", d.id)
             continue
-        topup = None
+        topup_key = None
         if st["balance"] < TON_JETTON_MIN_GAS:
             need = TON_JETTON_MIN_GAS - st["balance"]
-            topup = _new(db, network=nw.network, asset_id=f"{nw.network}:native", kind="gas_topup",
-                         deposit_ids=[d.id], source_address=gas.address, destination=d.display_address,
-                         amount=str(need), fee_estimate="5000000",
-                         idempotency_key=f"{nw.network}:gas:{d.id}:{bal}:{st['balance']}",
-                         artifact={"role": "gas_wallet", "subwallet_id": TON_DEFAULT_SUBWALLET,
-                                   "intent": {"type": "gas_topup", "recipient_index": d.derivation_index,
-                                              "amount": need}})
-            if topup:
-                out.append(topup)
-        s = _new(db, network=nw.network, asset_id=asset.id, kind="sweep", deposit_ids=[d.id],
-                 source_address=d.display_address, destination=nw.destination, amount=str(bal),
-                 fee_estimate=str(TON_JETTON_ATTACH), idempotency_key=f"{nw.network}:jetton:{d.id}:{bal}",
-                 depends_on=topup.id if topup else None,
-                 artifact={"role": "deposit", "index": d.derivation_index,
-                           "subwallet_id": ton_subwallet_id(d.derivation_index),
-                           "intent": {"type": "sweep_jetton", "jetton_wallet": jw, "destination": nw.destination,
-                                      "amount": bal, "attach": TON_JETTON_ATTACH}})
-        if s:
-            out.append(s)
-    return out
+            topup_key = batch.add(
+                network=nw.network, asset_id=f"{nw.network}:native", kind="gas_topup", deposit_ids=[d.id],
+                source_address=gas.address, destination=d.display_address, amount=str(need), fee_estimate="5000000",
+                idempotency_key=f"{nw.network}:gas:{d.id}:{bal}:{st['balance']}",
+                artifact={"role": "gas_wallet", "subwallet_id": TON_DEFAULT_SUBWALLET,
+                          "intent": {"type": "gas_topup", "recipient_index": d.derivation_index, "amount": need}})
+        batch.add(network=nw.network, asset_id=asset.id, kind="sweep", deposit_ids=[d.id],
+                  source_address=d.display_address, destination=nw.destination, amount=str(bal),
+                  fee_estimate=str(TON_JETTON_ATTACH), idempotency_key=f"{nw.network}:jetton:{d.id}:{bal}",
+                  depends_on_key=topup_key,
+                  artifact={"role": "deposit", "index": d.derivation_index,
+                            "subwallet_id": ton_subwallet_id(d.derivation_index),
+                            "intent": {"type": "sweep_jetton", "jetton_wallet": jw, "destination": nw.destination,
+                                       "amount": bal, "attach": TON_JETTON_ATTACH}})
 
 
 # ── Execution ─────────────────────────────────────────────────────────────
@@ -356,9 +369,60 @@ def advance(db: Session, s: Sweep) -> None:
         _track(db, s)
 
 
+def _landed_txid(adapter, s: Sweep) -> str | None:
+    """If a previous attempt was broadcast but its response was lost, return that transaction's id."""
+    prev = (s.artifact or {}).get("last_attempt") or {}
+    fam = NETWORKS[s.network].family
+    try:
+        if fam == "ton":
+            if not prev.get("msg_hash"):
+                return None
+            tx = adapter.tx_by_message(prev["msg_hash"])
+            return base64.b64decode(tx["hash"]).hex() if tx else None
+        if not prev.get("txid"):
+            return None
+        if fam == "evm":
+            return prev["txid"] if adapter.tx_known(prev["txid"]) else None
+        return prev["txid"] if adapter.tx_known(prev["txid"]) else None
+    except ChainError:
+        return None
+
+
+def _refresh_evm_fees(db: Session, adapter: EvmAdapter, s: Sweep, tx: dict) -> dict:
+    """Re-price an EVM transaction at signing time and re-check the fee cap; recompute native sweep value."""
+    nw = db.get(NetworkWallet, s.network)
+    net = NETWORKS[s.network]
+    fees = adapter.fee_params()
+    for k in ("maxFeePerGas", "maxPriorityFeePerGas", "gasPrice"):
+        tx.pop(k, None)
+    tx.update(fees)
+    price = fees.get("maxFeePerGas") or fees["gasPrice"]
+    cost = int(tx["gas"]) * price
+    cap = _fee_cap(db, nw, net)
+    if cap is not None and cost > cap:
+        raise SweepError(f"current network fee {cost} exceeds the configured cap {cap}; will retry later")
+    intent = dict(s.artifact["intent"])
+    if intent["type"] == "sweep_native":
+        bal = adapter.balance(tx["from"], asset_info(db.get(Asset, s.asset_id)))
+        value = bal - cost
+        if value <= 0:
+            raise SweepError("balance no longer covers the network fee")
+        tx["value"] = value
+        intent["amount"] = value
+        s.amount = str(value)
+    s.fee_estimate = str(cost)
+    s.artifact = {**s.artifact, "intent": intent}
+    return tx
+
+
 def _sign_and_broadcast(db: Session, s: Sweep) -> None:
     adapter = adapter_for(db, s.network)
     fam = NETWORKS[s.network].family
+    landed = _landed_txid(adapter, s)
+    if landed:
+        s.txid, s.status = landed, "broadcast"
+        audit.record(db, audit.SYSTEM, "sweep.broadcast_recovered", s.id, txid=landed)
+        return
     s.status = "signing"
     s.attempts += 1
     db.flush()
@@ -367,7 +431,7 @@ def _sign_and_broadcast(db: Session, s: Sweep) -> None:
             res = signer_client.sign(s.network, "btc_psbt", {"psbt": s.artifact["psbt"]}, f"{s.id}:{s.attempts}")
             raw = res["raw"]
         elif fam == "evm":
-            tx = dict(s.artifact["tx"])
+            tx = _refresh_evm_fees(db, adapter, s, dict(s.artifact["tx"]))
             tx["nonce"] = adapter.nonce(tx["from"])
             adapter.simulate(tx)
             res = signer_client.sign(s.network, "evm_tx", {"tx": tx, "role": s.artifact["role"],
@@ -375,20 +439,22 @@ def _sign_and_broadcast(db: Session, s: Sweep) -> None:
                                                            "intent": s.artifact["intent"]}, f"{s.id}:{s.attempts}")
             raw = res["raw"]
         else:
-            src = s.source_address
-            seqno = adapter.seqno(src)
+            seqno = adapter.seqno(s.source_address)
             res = signer_client.sign(s.network, "ton_transfer", {"role": s.artifact["role"],
                                                                  "index": s.artifact.get("index"),
                                                                  "seqno": seqno, "intent": s.artifact["intent"]},
                                      f"{s.id}:{s.attempts}")
             raw = res["boc"]
             s.artifact = {**s.artifact, "msg_hash": res["msg_hash"]}
+        # Remember what we are about to broadcast, so a lost response is recognised on the next attempt.
+        s.artifact = {**s.artifact, "last_attempt": {"txid": res.get("txid"), "msg_hash": res.get("msg_hash")}}
+        db.flush()
         txid = adapter.broadcast(raw)
         s.txid = res.get("txid") or txid
         s.status = "broadcast"
         audit.record(db, audit.SYSTEM, "sweep.broadcast", s.id, txid=s.txid)
         emit(db, "sweep.broadcast", sweep_view(db, s))
-    except (signer_client.SignerError, ChainError, KeyError) as exc:
+    except (signer_client.SignerError, ChainError, SweepError, KeyError) as exc:
         s.error = str(exc)[:500]
         s.status = "failed" if s.attempts >= MAX_ATTEMPTS else "approved"
         s.next_attempt_at = utcnow() + timedelta(minutes=5 * s.attempts)
@@ -426,6 +492,8 @@ def submit_external(db: Session, s: Sweep, signed: str, actor: audit.Actor) -> N
         if [o.script_pubkey.data for o in tx.vout] != [o.script_pubkey.data for o in planned.tx.vout] or \
                 [o.value for o in tx.vout] != [o.value for o in planned.tx.vout]:
             raise SweepError("signed transaction outputs differ from the planned sweep")
+        if sorted((i.txid, i.vout) for i in tx.vin) != sorted((i.txid, i.vout) for i in planned.tx.vin):
+            raise SweepError("signed transaction spends different inputs than the planned sweep")
         raw = tx.serialize().hex()
     elif fam == "ton":
         cell = ton_wallet.boc_b64_to_cell(signed)
@@ -440,6 +508,22 @@ def submit_external(db: Session, s: Sweep, signed: str, actor: audit.Actor) -> N
             raise SweepError(f"could not decode signed transaction: {exc}") from exc
         if decoded.lower() != s.artifact["tx"]["from"].lower():
             raise SweepError("transaction is not signed by the deposit/gas address of this sweep")
+        try:
+            got = evm_abi.decode_raw_transaction(raw)
+        except ValueError as exc:
+            raise SweepError(str(exc)) from exc
+        plan_tx = s.artifact["tx"]
+        if got["chain_id"] != NETWORKS[s.network].chain_id:
+            raise SweepError("signed transaction targets a different chain")
+        if (got["to"] or "").lower() != plan_tx["to"].lower():
+            raise SweepError("signed transaction pays a different recipient than the planned sweep")
+        if got["data"].lower().removeprefix("0x") != (plan_tx.get("data") or "0x").lower().removeprefix("0x"):
+            raise SweepError("signed transaction calldata differs from the planned sweep")
+        if s.artifact["intent"]["type"] == "sweep_native":
+            if got["value"] > int(plan_tx["value"]) or got["value"] <= 0:
+                raise SweepError("signed transaction moves more value than planned")
+        elif got["value"] != int(plan_tx.get("value", 0)):
+            raise SweepError("signed transaction value differs from the planned sweep")
     s.txid = adapter.broadcast(raw)
     s.status = "broadcast"
     audit.record(db, actor, "sweep.external_broadcast", s.id, txid=s.txid)
@@ -463,10 +547,13 @@ def _track(db: Session, s: Sweep) -> None:
             s.status, s.error = "failed", "wallet rejected the message"
             emit(db, "sweep.failed", sweep_view(db, s))
             return
-        s.txid = tx.get("hash") and __import__("base64").b64decode(tx["hash"]).hex()
+        s.txid = base64.b64decode(tx["hash"]).hex() if tx.get("hash") else s.txid
         ok = True
     else:
-        st = adapter.refresh(s.txid, -1, asset_info(asset), (s.destination or "").lower())
+        if fam == "evm":
+            st = adapter.receipt_state(s.txid)
+        else:
+            st = adapter.refresh(s.txid, -1, asset_info(asset), (s.destination or "").lower())
         if not st.found:
             if utcnow() - s.updated_at > timedelta(hours=3):
                 s.status, s.error = "failed", "transaction not found on chain"

@@ -23,7 +23,7 @@ x-gateway: &gateway
     CRYPTUS_DATABASE_URL: postgresql+psycopg://cryptus:${POSTGRES_PASSWORD}@postgres:5432/cryptus
     CRYPTUS_SECRET_KEY_FILE: /run/secrets/cryptus_secret_key
     CRYPTUS_PUBLIC_URL: https://${CRYPTUS_DOMAIN}
-    CRYPTUS_TRUSTED_PROXIES: '["172.16.0.0/12"]'
+    CRYPTUS_TRUSTED_PROXIES: '["172.30.250.0/24"]'   # the edge network below: only Caddy can set X-Forwarded-For
     CRYPTUS_SIGNER_URL: ${CRYPTUS_SIGNER_URL:-}
     CRYPTUS_SIGNER_TOKEN_FILE: /run/secrets/signer_token
   secrets: [cryptus_secret_key, signer_token]
@@ -79,7 +79,7 @@ services:
       CRYPTUS_SIGNER_TOKEN_FILE: /run/secrets/signer_token
     secrets: [signer_passphrase, signer_token]
     volumes:
-      - ./signer:/signer
+      - ./signer:/signer          # must be owned by uid 10001:  sudo chown -R 10001:10001 deploy/signer
     read_only: true
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
@@ -99,16 +99,19 @@ services:
     depends_on: [web]
 
   bitcoind:
-    image: bitcoin/bitcoin:28.1
+    image: bitcoin/bitcoin:32
     profiles: ["bitcoind"]
     restart: unless-stopped
-    command: ["-server=1", "-rpcbind=0.0.0.0", "-rpcallowip=172.16.0.0/12", "-rpcuser=${BITCOIND_RPC_USER}",
-              "-rpcpassword=${BITCOIND_RPC_PASSWORD}", "-txindex=0", "-prune=0", "-disablewallet=0"]
+    command: ["-server=1", "-rpcbind=0.0.0.0", "-rpcallowip=172.16.0.0/12", "-rpcallowip=192.168.0.0/16", "-rpcallowip=10.0.0.0/8",
+              "-rpcuser=${BITCOIND_RPC_USER}",
+              "-rpcpassword=${BITCOIND_RPC_PASSWORD}", "-prune=0", "-disablewallet=0"]
     volumes: [bitcoind-data:/home/bitcoin/.bitcoin]
     networks: [chains]
 
 networks:
-  edge: {}
+  edge:
+    ipam:
+      config: [{ subnet: 172.30.250.0/24 }]   # change if it collides with your LAN; keep CRYPTUS_TRUSTED_PROXIES in sync
   backend: { internal: true }
   signing: { internal: true }
   chains: {}

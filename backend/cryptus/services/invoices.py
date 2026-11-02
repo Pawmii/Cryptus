@@ -73,13 +73,19 @@ def available_assets(db: Session, mode: str) -> list[Asset]:
 # ── Numbering ─────────────────────────────────────────────────────────────
 
 def next_number(db: Session) -> str:
+    from sqlalchemy.exc import IntegrityError
+
     year = utcnow().year
-    res = db.execute(update(InvoiceSequence).where(InvoiceSequence.year == year)
-                     .values(last=InvoiceSequence.last + 1).returning(InvoiceSequence.last)).scalar_one_or_none()
+    bump = (update(InvoiceSequence).where(InvoiceSequence.year == year)
+            .values(last=InvoiceSequence.last + 1).returning(InvoiceSequence.last))
+    res = db.execute(bump).scalar_one_or_none()
     if res is None:
-        db.add(InvoiceSequence(year=year, last=1))
-        db.flush()
-        res = 1
+        try:
+            with db.begin_nested():  # first invoice of the year; a concurrent request may create the row too
+                db.add(InvoiceSequence(year=year, last=1))
+            res = 1
+        except IntegrityError:
+            res = db.execute(bump).scalar_one()
     return f"CR-{year}-{res:06d}"
 
 
@@ -223,7 +229,8 @@ def quote(db: Session, inv: Invoice, asset_id: str) -> DepositAddress:
     late = int(settings_svc.get(db, "invoice")["late_payment_window_minutes"])
     dep = DepositAddress(keychain_id=kc.id, derivation_index=idx, derivation_path=path, network=asset.network,
                          asset_id=asset.id, address=normalize_address(net.family, display), display_address=display,
-                         invoice_id=inv.id, amount_due=str(due), rate=rate, rate_source=source, meta=meta,
+                         invoice_id=inv.id, amount_due=str(due), rate=rate, rate_source=source,
+                         meta={**meta, "created_ts": int(utcnow().timestamp())},
                          monitor_until=inv.expires_at + timedelta(minutes=late))
     db.add(dep)
     db.flush()

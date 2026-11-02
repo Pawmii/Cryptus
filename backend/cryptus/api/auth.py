@@ -12,7 +12,7 @@ from ..config import get_settings
 from ..db import get_db, utcnow
 from ..models import LoginAttempt, User, UserSession
 from ..security import (decrypt_secret, encrypt_secret, hash_password, needs_rehash, new_session_token,
-                        new_totp_secret, password_problems, token_digest, totp_uri, verify_password, verify_totp)
+                        new_totp_secret, password_problems, token_digest, totp_step, totp_uri, verify_password)
 from ..services import audit, settings as settings_svc
 from .deps import SESSION_COOKIE, Principal, client_ip, current, current_mfa_pending
 
@@ -52,6 +52,18 @@ def _throttle(db: Session, *buckets: str) -> None:
                        .where(LoginAttempt.bucket == b, LoginAttempt.at >= since)).scalar_one()
         if n >= MAX_PER_BUCKET:
             raise HTTPException(429, "too many attempts — try again later")
+
+
+def _use_totp(db: Session, user: User, secret: str | None, code: str) -> bool:
+    """Accept each TOTP code at most once (no replay within its validity window)."""
+    step = totp_step(secret or "", code)
+    if step is None:
+        return False
+    bucket = f"totp-used:{user.id}:{step}"
+    if db.execute(select(LoginAttempt.id).where(LoginAttempt.bucket == bucket)).first():
+        return False
+    db.add(LoginAttempt(bucket=bucket))
+    return True
 
 
 def start_session(db: Session, response: Response, request: Request, user: User, mfa_pending: bool) -> UserSession:
@@ -104,7 +116,7 @@ def mfa(body: CodeIn, request: Request, p: Principal = Depends(current_mfa_pendi
         return {"ok": True, "user": user_view(p.user), "csrf_token": p.session.csrf_token}
     ip = client_ip(request)
     _throttle(db, f"mfa:{p.user.id}")
-    if not verify_totp(decrypt_secret(p.user.totp_secret_enc) or "", body.code):
+    if not _use_totp(db, p.user, decrypt_secret(p.user.totp_secret_enc), body.code):
         db.add(LoginAttempt(bucket=f"mfa:{p.user.id}"))
         db.commit()
         raise HTTPException(401, "invalid code")
@@ -159,7 +171,7 @@ def totp_begin(p: Principal = Depends(current), db: Session = Depends(get_db)):
 @router.post("/totp/confirm")
 def totp_confirm(body: CodeIn, request: Request, p: Principal = Depends(current), db: Session = Depends(get_db)):
     secret = decrypt_secret(p.user.totp_secret_enc)
-    if not secret or not verify_totp(secret, body.code):
+    if not secret or not _use_totp(db, p.user, secret, body.code):
         raise HTTPException(400, "invalid code")
     p.user.totp_enabled = True
     audit.record(db, p.actor(request), "auth.totp_enabled", p.user.id)
@@ -169,7 +181,7 @@ def totp_confirm(body: CodeIn, request: Request, p: Principal = Depends(current)
 @router.post("/totp/disable")
 def totp_disable(body: CodeIn, request: Request, p: Principal = Depends(current), db: Session = Depends(get_db)):
     secret = decrypt_secret(p.user.totp_secret_enc)
-    if not p.user.totp_enabled or not secret or not verify_totp(secret, body.code):
+    if not p.user.totp_enabled or not secret or not _use_totp(db, p.user, secret, body.code):
         raise HTTPException(400, "invalid code")
     p.user.totp_enabled, p.user.totp_secret_enc = False, None
     audit.record(db, p.actor(request), "auth.totp_disabled", p.user.id)

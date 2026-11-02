@@ -19,10 +19,10 @@ from ..core.networks import NETWORKS
 from ..db import get_db, utcnow
 from ..models import (ApiKey, Asset, AuditEntry, DepositAddress, Event, Invoice, Keychain, NetworkWallet, Payment,
                       Sweep, User, UserSession, WebhookDelivery, WebhookEndpoint)
-from ..security import (decrypt_secret, encrypt_secret, hash_password, new_api_key, new_webhook_secret,
+from ..security import (encrypt_secret, hash_password, new_api_key, new_webhook_secret,
                         password_problems, token_digest)
 from ..services import audit, consolidation, infra, invoices as inv_svc, settings as settings_svc, signer_client
-from ..services.webhooks import EVENT_TYPES, UnsafeTarget, check_target, emit, envelope
+from ..services.webhooks import EVENT_TYPES, UnsafeTarget, check_target, envelope
 from .auth import user_view
 from .deps import Principal, current, require
 
@@ -137,27 +137,41 @@ def list_invoices(status: str | None = None, q: str | None = None, mode: str | N
 
 
 @router.get("/invoices/export.csv")
-def export_invoices(p: Principal = Depends(require("operator")), db: Session = Depends(get_db)):
+def export_invoices(request: Request, p: Principal = Depends(require("operator")), db: Session = Depends(get_db)):
+    audit.record(db, p.actor(request), "invoices.exported")
+
+    def cell(v) -> str:
+        v = "" if v is None else str(v)
+        # Neutralise spreadsheet formula injection (=, +, -, @, tab, CR at the start of a cell).
+        return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+
     def gen():
+        from ..db import session_scope
+
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(["number", "status", "mode", "price", "currency", "asset", "network", "amount_due",
                     "amount_confirmed", "order_id", "created_at", "paid_at", "overpaid", "paid_late"])
         yield buf.getvalue()
-        for i in db.execute(select(Invoice).order_by(Invoice.created_at)).scalars():
-            buf.seek(0)
-            buf.truncate()
-            t = inv_svc.totals(db, i)
-            dep = db.get(DepositAddress, i.active_deposit_id) if i.active_deposit_id else None
-            a = db.get(Asset, dep.asset_id) if dep else None
-            w.writerow([i.number, i.status, i.mode, i.price_amount, i.price_currency, a.symbol if a else "",
-                        a.network if a else "", fmt_atomic(dep.amount_due, a.decimals) if dep else "",
-                        fmt_atomic(t.get(dep.id, {}).get("confirmed", 0), a.decimals) if dep else "",
-                        i.order_id or "", i.created_at.isoformat(), i.paid_at.isoformat() if i.paid_at else "",
-                        i.overpaid, i.paid_late])
-            yield buf.getvalue()
-    audit.record(db, audit.Actor("user", p.user.id, p.user.email), "invoices.exported")
-    db.commit()
+        with session_scope() as s:  # own session: the request session is closed before streaming starts
+            ids = s.execute(select(Invoice.id).order_by(Invoice.created_at)).scalars().all()
+            for n, iid in enumerate(ids):
+                if n and n % 500 == 0:
+                    s.expunge_all()  # keep memory flat on large exports
+                i = s.get(Invoice, iid)
+                buf.seek(0)
+                buf.truncate()
+                t = inv_svc.totals(s, i)
+                dep = s.get(DepositAddress, i.active_deposit_id) if i.active_deposit_id else None
+                a = s.get(Asset, dep.asset_id) if dep else None
+                w.writerow([cell(x) for x in (
+                    i.number, i.status, i.mode, i.price_amount, i.price_currency, a.symbol if a else "",
+                    a.network if a else "", fmt_atomic(dep.amount_due, a.decimals) if dep else "",
+                    fmt_atomic(t.get(dep.id, {}).get("confirmed", 0), a.decimals) if dep else "",
+                    i.order_id, i.created_at.isoformat(), i.paid_at.isoformat() if i.paid_at else "",
+                    i.overpaid, i.paid_late)])
+                yield buf.getvalue()
+
     return StreamingResponse(gen(), media_type="text/csv",
                              headers={"Content-Disposition": "attachment; filename=cryptus-invoices.csv"})
 
@@ -772,6 +786,8 @@ def put_settings(section: str, body: dict, request: Request, p: Principal = Depe
     need = SETTINGS_SECTIONS.get(section) or _404()
     if {"viewer": 0, "operator": 1, "admin": 2, "owner": 3}[p.user.role] < {"admin": 2, "owner": 3}[need]:
         raise HTTPException(403, f"requires {need} role")
+    if section == "security" and body.get("require_mfa_for_admins") is True and not p.user.totp_enabled:
+        _bad(ValueError("enable two-factor authentication on your own account before requiring it for admins"))
     if section == "rates" and "api_key" in body:
         key = body.pop("api_key")
         body["api_key_enc"] = encrypt_secret(key) if key else None
@@ -783,6 +799,8 @@ def put_settings(section: str, body: dict, request: Request, p: Principal = Depe
         res = settings_svc.put(db, section, body)
     except KeyError:
         _404()
+    except settings_svc.SettingsError as exc:
+        _bad(exc)
     audit.record(db, p.actor(request), "settings.updated", section,
                  keys=sorted(k for k in body if k != "api_key_enc"))
     return res

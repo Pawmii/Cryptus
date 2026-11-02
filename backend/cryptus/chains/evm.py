@@ -30,6 +30,7 @@ class EvmAdapter(ChainAdapter):
         self.url = conf.url
         self.blocks_per_tick = int(conf.options.get("blocks_per_tick", 120))
         self.log_range = int(conf.options.get("max_log_range", 1000))
+        self.reorg_rescan = int(conf.options.get("reorg_rescan", min(conf.confirmations, 6)))
         self._id = 0
 
     # ── JSON-RPC ───────────────────────────────────────────────────────
@@ -90,14 +91,18 @@ class EvmAdapter(ChainAdapter):
     # ── Scan ───────────────────────────────────────────────────────────
     def scan(self, items: list[WatchItem]) -> ScanResult:
         head = self.head()
-        start = self.conf.cursor.get("block")
-        if start is None:
+        cursor = self.conf.cursor.get("block")
+        if cursor is None:
             start = max(0, head - max(self.conf.confirmations * 2, 32))
+            end = min(head, start + self.blocks_per_tick - 1)
         else:
-            start = int(start) + 1
-        if start > head:
-            return ScanResult([], {"block": head}, head)
-        end = min(head, start + self.blocks_per_tick - 1)
+            cursor = int(cursor)
+            if cursor >= head:
+                return ScanResult([], {"block": head}, head)
+            end = min(head, cursor + self.blocks_per_tick)
+            # Re-read the most recent blocks every pass: a short reorg can put a payment into a replacement
+            # block below the cursor. Upserts are idempotent, so overlap is harmless.
+            start = max(0, cursor + 1 - self.reorg_rescan)
         observed: list[Observed] = []
         native = {i.address: i for i in items if i.asset.kind == "native"}
         tokens: dict[str, list[WatchItem]] = {}
@@ -186,6 +191,18 @@ class EvmAdapter(ChainAdapter):
             tx = self.call("eth_getTransactionByHash", txid)
             amount = int(tx["value"], 16) if tx and (tx.get("to") or "").lower() == address else None
         return TxState(True, conf, bn, rc["blockHash"], amount=amount)
+
+    def receipt_state(self, txid: str) -> TxState:
+        """Execution status of an arbitrary transaction (used for our own sweeps and top-ups)."""
+        rc = self.call("eth_getTransactionReceipt", txid)
+        if rc is None or rc.get("blockNumber") is None:
+            return TxState(found=False)
+        bn = int(rc["blockNumber"], 16)
+        return TxState(True, self.head() - bn + 1, bn, rc["blockHash"], failed=int(rc["status"], 16) != 1)
+
+    def tx_known(self, txid: str) -> bool:
+        """True if the node has the transaction (mempool or mined)."""
+        return self.call("eth_getTransactionByHash", txid) is not None
 
     # ── Balances ───────────────────────────────────────────────────────
     def balance(self, address: str, asset: AssetInfo, meta: dict | None = None, block: str | int = "latest") -> int:

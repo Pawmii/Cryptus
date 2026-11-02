@@ -33,7 +33,28 @@ def ring(ton_mnemonic):
 
 @pytest.fixture()
 def db_url(tmp_path):
-    return f"sqlite:///{tmp_path / 'cryptus.db'}"
+    """SQLite by default; a fresh PostgreSQL database per test when CRYPTUS_TEST_PG_URL is set
+    (e.g. postgresql+psycopg://postgres:ci@localhost:5432/postgres)."""
+    base = os.environ.get("CRYPTUS_TEST_PG_URL")
+    if not base:
+        yield f"sqlite:///{tmp_path / 'cryptus.db'}"
+        return
+    import uuid
+
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.engine import make_url
+
+    name = "cryptus_t_" + uuid.uuid4().hex[:12]
+    admin = create_engine(base, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f'CREATE DATABASE "{name}"'))
+    yield make_url(base).set(database=name).render_as_string(hide_password=False)
+    from cryptus import db
+    if db._engine is not None:
+        db._engine.dispose()
+    with admin.connect() as c:
+        c.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+    admin.dispose()
 
 
 @pytest.fixture()

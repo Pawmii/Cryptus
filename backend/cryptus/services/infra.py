@@ -13,7 +13,7 @@ from ..core import derivation
 from ..core.networks import NETWORKS, builtin_assets, get_network
 from ..db import utcnow
 from ..models import Asset, Keychain, NetworkConfig, NetworkWallet
-from ..security import decrypt_secret, encrypt_secret
+from ..security import encrypt_secret
 from . import audit
 
 
@@ -22,11 +22,22 @@ class InfraError(ValueError):
 
 
 def seed_assets(db: Session) -> None:
+    """Insert built-in assets that are missing (safe to run concurrently from several processes)."""
+    from sqlalchemy.exc import IntegrityError
+
     for a in builtin_assets():
-        if db.get(Asset, a.id) is None:
-            db.add(Asset(id=a.id, network=a.network, kind=a.kind, symbol=a.symbol, name=a.name, decimals=a.decimals,
-                         contract=a.contract, coingecko_id=a.coingecko_id, builtin=True, enabled=True,
-                         verified_at=utcnow(), verification={"source": "built-in registry"}))
+        row = db.get(Asset, a.id)
+        if row is not None:
+            if row.builtin and not row.coingecko_id and a.coingecko_id:
+                row.coingecko_id = a.coingecko_id
+            continue
+        try:
+            with db.begin_nested():
+                db.add(Asset(id=a.id, network=a.network, kind=a.kind, symbol=a.symbol, name=a.name,
+                             decimals=a.decimals, contract=a.contract, coingecko_id=a.coingecko_id, builtin=True,
+                             enabled=True, verified_at=utcnow(), verification={"source": "built-in registry"}))
+        except IntegrityError:
+            pass
     db.flush()
 
 

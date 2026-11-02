@@ -24,6 +24,11 @@ jobs:
       - name: Tests (SQLite)
         working-directory: backend
         run: pytest -q
+      - name: Tests (PostgreSQL)
+        working-directory: backend
+        env:
+          CRYPTUS_TEST_PG_URL: postgresql+psycopg://postgres:ci@localhost:5432/postgres
+        run: pytest -q
       - name: Migrations apply on PostgreSQL
         working-directory: backend
         env:

@@ -10,7 +10,9 @@
 | Fake payments | On-chain re-verification of every payment (receipt status, log contents, canonical block, jetton wallet owner/master) |
 | Reorgs / RBF | Configurable confirmations. Re-verification until 3× depth. Orphaned payments revert invoices |
 | Fresh-install takeover | One-time setup token required until an owner exists |
-| Credential stuffing | Argon2id hashing, per-IP and per-account throttling, lockout, optional/enforced TOTP |
+| Credential stuffing | Argon2id hashing, per-IP and per-account throttling, temporary lockout, single-use TOTP codes. *Settings → Security → Require 2FA* blocks privileged actions for admins/owners until they enrol |
+| Misconfiguration lock-out | Settings are type- and range-checked on write (e.g. session lifetime 1–720 h); `cryptus reset-password` from a shell as last resort |
+| Lost broadcast responses | The id of every signed transaction is recorded before broadcast; a retry first checks whether it already landed instead of signing again |
 | CSRF / XSS | SameSite=Strict, HttpOnly cookies, per-session CSRF token header, strict CSP (`script-src 'self'`), no inline scripts |
 | SSRF via webhooks | HTTPS only in production. Private, loopback and link-local targets refused. No redirects |
 | API key leakage | Keys stored as keyed HMAC digests, scoped, live/test separation, instant revocation |
@@ -28,6 +30,16 @@
 - [ ] Keep a small balance on gas wallets. Set daily limits in the signer policy.
 - [ ] Back up PostgreSQL, `deploy/secrets/`, and the signer's keystore and recovery phrases (separately and offline).
 - [ ] Monitor `invoice.needs_review`, `payment.orphaned` and `sweep.failed` webhooks.
+
+## Known limitations
+
+* Webhook targets are resolved and checked before connecting. A DNS answer that changes between the check
+  and the connection (DNS rebinding) is not prevented. Use HTTPS endpoints you control.
+* The account lockout (8 failures → 15 min) can be triggered by anyone who knows an operator's email. Restrict
+  the console to trusted networks at the proxy if that matters to you.
+* The merchant API has no built-in rate limit. Put one in front of `/api/v1` at the proxy if keys may leak.
+* TON native sweeps send the whole wallet balance. The signer's daily limits apply to jetton amounts and
+  top-ups, not to that balance, which is still bounded by the allowlisted destination.
 
 ## Reporting vulnerabilities
 

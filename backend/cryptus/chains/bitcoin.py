@@ -15,6 +15,7 @@ it can be signed by the CRYPTUS signer *or* by any hardware/offline wallet
 from __future__ import annotations
 
 import json
+import time
 from decimal import Decimal
 
 import httpx
@@ -140,8 +141,11 @@ class BitcoinAdapter(ChainAdapter):
             return {}
         self._ensure_wallet()
         desc = self.rpc.call("getdescriptorinfo", f"addr({item.display_address})")["descriptor"]
-        res = self.rpc.call("importdescriptors", [{"desc": desc, "timestamp": "now", "label": item.deposit_id}],
-                            wallet=True)
+        # Rescan from shortly before the address was handed out, so a payment made while the node was
+        # unreachable (and the import deferred) is still found. Two hours covers block-timestamp skew.
+        created = int(item.meta.get("created_ts") or time.time())
+        res = self.rpc.call("importdescriptors", [{"desc": desc, "timestamp": max(0, created - 7200),
+                                                   "label": item.deposit_id}], wallet=True)
         if not res or not res[0].get("success"):
             raise ChainError(f"importdescriptors failed: {res}")
         return {"core_imported": True}
@@ -244,6 +248,16 @@ class BitcoinAdapter(ChainAdapter):
             except ChainError:
                 return None
         return self._get(f"/tx/{txid}/hex", text=True)
+
+    def tx_known(self, txid: str) -> bool:
+        """True if the transaction is in the mempool or the chain."""
+        if self.conf.backend == "bitcoin_core":
+            try:
+                self.rpc.call("getmempoolentry", txid)
+                return True
+            except ChainError:
+                return self.raw_transaction(txid) is not None
+        return self._get(f"/tx/{txid}/status") is not None
 
     def feerate_sat_vb(self, target_blocks: int = 6) -> float:
         if self.conf.backend == "bitcoin_core":

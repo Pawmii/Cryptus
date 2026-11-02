@@ -55,7 +55,7 @@ def _stack_cell(entry) -> Cell:
     """Parse a cell/slice stack entry from either Toncenter v2 or v3 response formats."""
     if isinstance(entry, dict):  # v3: {"type": "cell"|"slice", "value": b64}
         return Cell.one_from_boc(base64.b64decode(entry["value"]))
-    kind, val = entry[0], entry[1]
+    val = entry[1]
     b = val.get("bytes") if isinstance(val, dict) else val
     return Cell.one_from_boc(base64.b64decode(b))
 

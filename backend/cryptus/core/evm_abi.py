@@ -62,3 +62,28 @@ def decode_string(hexdata: str) -> str:
     off = int.from_bytes(d[0:32], "big")
     ln = int.from_bytes(d[off:off + 32], "big")
     return d[off + 32: off + 32 + ln].decode("utf-8", "replace")
+
+
+def decode_raw_transaction(raw: str) -> dict:
+    """Decode a signed EIP-1559/EIP-2930 or legacy (EIP-155) transaction into to/value/data/chain_id."""
+    import rlp
+    from eth_account.typed_transactions import TypedTransaction
+    from hexbytes import HexBytes
+
+    b = bytes.fromhex(raw.removeprefix("0x"))
+    if not b:
+        raise ValueError("empty transaction")
+    if b[0] <= 0x7F:  # typed envelope
+        d = TypedTransaction.from_bytes(HexBytes(b)).as_dict()
+        to = d.get("to")
+        return {"to": to_checksum_address(to) if to else None, "value": int(d.get("value", 0)),
+                "data": "0x" + bytes(d.get("data") or b"").hex(), "chain_id": int(d["chainId"])}
+    fields = rlp.decode(b)
+    if len(fields) != 9:
+        raise ValueError("unsupported legacy transaction encoding")
+    v = int.from_bytes(fields[6], "big")
+    if v < 35:
+        raise ValueError("legacy transaction without EIP-155 replay protection")
+    to = fields[3]
+    return {"to": to_checksum_address("0x" + to.hex()) if to else None, "value": int.from_bytes(fields[4], "big"),
+            "data": "0x" + fields[5].hex(), "chain_id": (v - 35) // 2}

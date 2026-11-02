@@ -8,7 +8,7 @@
 | `CRYPTUS_DATABASE_URL` | SQLite in `./data` | Use `postgresql+psycopg://…` in production |
 | `CRYPTUS_SECRET_KEY` / `_FILE` | — | Required in production. Signs sessions and encrypts stored secrets |
 | `CRYPTUS_PUBLIC_URL` | `http://localhost:8000` | Used in checkout URLs; `https://` enables HSTS |
-| `CRYPTUS_TRUSTED_PROXIES` | `["127.0.0.1","::1"]` | IPs/CIDRs whose `X-Forwarded-For` is honoured |
+| `CRYPTUS_TRUSTED_PROXIES` | `["127.0.0.1","::1"]` | IPs/CIDRs whose `X-Forwarded-For` is honoured. The compose file pins the `edge` network to `172.30.250.0/24` and trusts only that |
 | `CRYPTUS_COOKIE_SECURE` | `true` | Set `false` only for plain-HTTP local evaluation |
 | `CRYPTUS_SIGNER_URL`, `CRYPTUS_SIGNER_TOKEN` / `_FILE` | — | Enable managed signing |
 | `CRYPTUS_SETUP_TOKEN` | generated | Fix the installation token |
@@ -25,12 +25,18 @@ Networks, wallets, assets, policies and team are configured in the console and s
 | EVM | Any JSON-RPC with `eth_getLogs` and batch requests | Archive access is **not** required. Increase `max_log_range` for providers that allow it |
 | TON | Toncenter API (v2 + v3 indexer) | An API key is strongly recommended (rate limits). A self-hosted `ton-indexer` exposes the same API |
 
+EVM adapter options (*Networks → Configure*, stored per network): `blocks_per_tick` (default 120),
+`max_log_range` (1000), `reorg_rescan` (blocks re-read every pass, default `min(confirmations, 6)`),
+`legacy_gas` (force `gasPrice` instead of EIP-1559).
+
 Testnets: `btc-testnet` (testnet4/signet via Esplora), `eth-sepolia`, `bsc-testnet`, `polygon-amoy`,
-`arbitrum-sepolia`, `base-sepolia`, `ton-testnet`. Test-mode API keys can only use these.
+`arbitrum-sepolia`, `base-sepolia`, `ton-testnet`. Test-mode API keys can only use these. Testnet coins are priced with their mainnet
+counterpart's rate, so fiat-priced integration tests (`"currency": "USD"`) work in test mode.
 
 ## Managed signing setup
 
 ```bash
+sudo chown -R 10001:10001 deploy/signer        # the container runs as uid 10001
 docker compose -f deploy/docker-compose.yml run --rm signer cryptus-signer init --keystore /signer/keystore.json
 cp deploy/signer/policy.example.json deploy/signer/policy.json   # edit allowlists and limits
 echo "CRYPTUS_SIGNER_URL=http://signer:8700" >> deploy/.env
