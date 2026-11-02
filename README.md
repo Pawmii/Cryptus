@@ -23,6 +23,47 @@ verified on-chain, and optional consolidation moves funds to a primary wallet un
 > configurable policies (terms acceptance, limits, notices) but no legal compliance by itself.
 > See [docs/COMPLIANCE.md](docs/COMPLIANCE.md).
 
+## Screenshots
+
+> The demo instance uses real connections to Bitcoin, Ethereum, Base, TON and Sepolia and real CoinGecko rates.
+> Its payments and invoice dates are simulated so that every interface state shows.
+
+<p align="center">
+  <img src="docs/screenshots/05-overview.png" alt="Operator console overview: settled volume, conversion, network health" width="100%" />
+</p>
+
+| Checkout: choose how to pay | Checkout: awaiting confirmations |
+|---|---|
+| ![Asset selection](docs/screenshots/22-checkout-choose-asset.png) | ![Payment detected, confirmations filling](docs/screenshots/23-checkout-awaiting.png) |
+| **Invoice detail** | **Consolidation & emergency stop** |
+| ![Invoice detail](docs/screenshots/07-invoice-detail.png) | ![Consolidation](docs/screenshots/09-consolidation.png) |
+| **Networks** | **Installation wizard** |
+| ![Networks](docs/screenshots/11-networks.png) | ![Setup wizard](docs/screenshots/04-setup-networks.png) |
+| **Light theme ("Ledger")** | **Sign in** |
+| ![Light theme](docs/screenshots/21-light-theme-overview.png) | ![Login](docs/screenshots/25-login.png) |
+
+<p align="center">
+  <img src="docs/screenshots/26-mobile-checkout.png" alt="Mobile checkout" width="260" />
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/27-mobile-login.png" alt="Mobile login" width="260" />
+</p>
+
+<details>
+<summary>All screens</summary>
+
+| | |
+|---|---|
+| ![](docs/screenshots/01-setup-system.png) System check | ![](docs/screenshots/02-setup-owner.png) Owner account |
+| ![](docs/screenshots/03-setup-business.png) Business profile | ![](docs/screenshots/06-invoices.png) Invoices |
+| ![](docs/screenshots/08-payments.png) Payments | ![](docs/screenshots/19-new-invoice-dialog.png) New invoice |
+| ![](docs/screenshots/18-sweep-dialog.png) Sweep approval | ![](docs/screenshots/10-wallets.png) Wallets |
+| ![](docs/screenshots/12-assets.png) Assets | ![](docs/screenshots/13-api-keys.png) API keys |
+| ![](docs/screenshots/14-webhooks.png) Webhooks | ![](docs/screenshots/15-team.png) Team |
+| ![](docs/screenshots/16-audit.png) Audit log | ![](docs/screenshots/17-settings.png) Settings |
+| ![](docs/screenshots/24-checkout-paid.png) Checkout: paid | ![](docs/screenshots/20-light-theme-account.png) Account & theme |
+
+</details>
+
 ## Quick start (evaluation, testnets)
 
 ```bash
