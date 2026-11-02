@@ -31,7 +31,7 @@ export function Networks() {
             <th className="r">Confirmations</th><th>Wallet</th><th /></tr></thead>
           <tbody>{rows.map((n) => (
             <tr key={n.key}>
-              <td><div><span className="row" style={{ gap: 8 }}>{n.name}<span className="tag">{n.native_symbol}</span></span>
+              <td><div className="vstack"><span className="row" style={{ gap: 8 }}>{n.name}<span className="tag">{n.native_symbol}</span></span>
                 <span className="xs faint">{FAMILY_LABEL[n.family]}{n.chain_id ? ` · chain ${n.chain_id}` : ""}</span></div></td>
               <td><Status value={n.status} live={n.status === "operational"} />
                 {n.health?.error && <div className="xs" style={{ color: "var(--danger)", maxWidth: 260 }}>{n.health.error}</div>}</td>

@@ -98,9 +98,9 @@ export function Overview() {
             <table className="table"><tbody>
               {data.networks.filter((n) => n.status !== "not_configured").map((n) => (
                 <tr key={n.key}>
-                  <td><div><span>{n.name}</span><span className="xs faint">{n.environment}</span></div></td>
+                  <td><div className="vstack"><span className="nowrap">{n.name}</span>
+                    <span className="xs faint num">{n.environment}{n.health?.height ? ` · #${n.health.height.toLocaleString()}` : ""}</span></div></td>
                   <td className="r"><Status value={n.status} /></td>
-                  <td className="r num xs muted">{n.health?.height ? `#${n.health.height.toLocaleString()}` : ""}</td>
                 </tr>))}
             </tbody></table>
           )}
@@ -130,7 +130,7 @@ export function Overview() {
           {data.received.length === 0 ? <Empty icon="asset" title="No confirmed payments" /> : (
             <table className="table"><tbody>{data.received.map((r) => (
               <tr key={r.asset}>
-                <td><div><strong style={{ fontWeight: 600 }}>{r.symbol}</strong><span className="xs faint">{r.network}</span></div></td>
+                <td><div className="vstack"><strong style={{ fontWeight: 600 }}>{r.symbol}</strong><span className="xs faint">{r.network}</span></div></td>
                 <td className="r num">{r.amount}</td>
                 <td className="r xs muted">{r.count}×</td>
               </tr>))}</tbody></table>

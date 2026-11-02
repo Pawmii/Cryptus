@@ -141,7 +141,7 @@ export function InvoiceDetail() {
             const d = i.deposit_details?.find((x) => x.id === qq.id);
             return (
               <tr key={qq.id}>
-                <td><div><span className="small">{qq.amount_due} {qq.symbol}</span>
+                <td><div className="vstack"><span className="small">{qq.amount_due} {qq.symbol}</span>
                   <span className="xs mono faint">{shortHash(qq.address, 10, 8)}</span></div></td>
                 <td className="xs mono muted">{d?.path} · #{d?.index}</td>
                 <td className="r">{d?.swept_at ? <Status value="confirmed" /> : qq.id === p?.id ? <span className="tag">active</span> : null}</td>

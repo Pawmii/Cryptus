@@ -34,7 +34,7 @@ export function Team() {
           <thead><tr><th>Member</th><th>Role</th><th>2FA</th><th>Status</th><th className="r">Last sign-in</th><th /></tr></thead>
           <tbody>{users.data.map((u) => (
             <tr key={u.id}>
-              <td><div><span>{u.name}{u.id === me?.id && <span className="tag" style={{ marginLeft: 6 }}>you</span>}</span>
+              <td><div className="vstack"><span>{u.name}{u.id === me?.id && <span className="tag" style={{ marginLeft: 6 }}>you</span>}</span>
                 <span className="xs faint">{u.email}</span></div></td>
               <td>{can("owner") && u.id !== me?.id ? (
                 <select className="select" style={{ height: 30, width: 130 }} value={u.role} onChange={(e) => patch(u.id, { role: e.target.value })}

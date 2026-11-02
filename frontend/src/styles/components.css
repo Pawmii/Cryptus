@@ -422,3 +422,4 @@
 /* ── Brand ────────────────────────────────────────────────────────────── */
 .wordmark { font-weight: 720; font-stretch: var(--stretch-label); letter-spacing: 0.2em; line-height: 1; color: var(--fg); }
 .lockup { display: inline-flex; align-items: center; gap: var(--s-3); }
+.vstack { display: grid; gap: 2px; min-width: 0; }

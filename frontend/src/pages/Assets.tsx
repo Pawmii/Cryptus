@@ -34,7 +34,7 @@ export function Assets() {
           <thead><tr><th>Asset</th><th>Network</th><th>Canonical id</th><th className="r">Decimals</th><th>Price source</th><th>Enabled</th></tr></thead>
           <tbody>{assets.data.map((a) => (
             <tr key={a.id}>
-              <td><div><strong style={{ fontWeight: 600 }}>{a.symbol}</strong><span className="xs faint">{a.name}</span></div></td>
+              <td><div className="vstack"><strong style={{ fontWeight: 600 }}>{a.symbol}</strong><span className="xs faint">{a.name}</span></div></td>
               <td className="small nowrap">{a.network_name}<div className="xs faint">{a.kind === "native" ? "native" : a.kind === "jetton" ? "Jetton" : "ERC-20"}</div></td>
               <td className="mono xs" title={a.id}>{a.contract ? `${a.network}:${a.kind}:${shortHash(a.contract, 8, 6)}` : a.id}</td>
               <td className="r num">{a.decimals}</td>

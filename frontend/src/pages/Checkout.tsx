@@ -148,7 +148,7 @@ export function Checkout() {
                           <button key={o.asset} className="asset-option" aria-pressed={p?.asset === o.asset}
                             disabled={!!selecting || needsTerms} onClick={() => select(o.asset)}>
                             <span className="asset-glyph">{assetGlyph(o.symbol)}</span>
-                            <span className="grow">
+                            <span className="grow vstack">
                               <strong style={{ fontWeight: 600 }}>{o.symbol}</strong>
                               <span className="xs muted">{o.kind === "native" ? `Native ${o.network_name} coin` : o.kind === "jetton" ? "Jetton on TON" : `Token on ${o.network_name}`}</span>
                             </span>

@@ -48,7 +48,7 @@ export function Webhooks() {
             <thead><tr><th>Endpoint</th><th>Mode</th><th>Events</th><th>Deliveries</th><th>State</th><th /></tr></thead>
             <tbody>{list.data.items.map((e) => (
               <tr key={e.id}>
-                <td><div><span className="mono small break">{e.url}</span>{e.description && <span className="xs faint">{e.description}</span>}</div></td>
+                <td><div className="vstack"><span className="mono small break">{e.url}</span>{e.description && <span className="xs faint">{e.description}</span>}</div></td>
                 <td><Status value={e.mode} /></td>
                 <td className="xs muted">{e.events.length ? `${e.events.length} selected` : "all events"}</td>
                 <td className="xs num"><span style={{ color: "var(--success)" }}>{e.stats.succeeded ?? 0} ok</span> · {e.stats.pending ?? 0} pending ·{" "}

@@ -87,7 +87,7 @@ export function ConsoleLayout() {
           <NavLink to="/account" className="nav-link" style={{ height: "auto", padding: 0 }}>
             <span className="user-chip">
               <span className="user-chip__avatar">{initials}</span>
-              <span style={{ minWidth: 0, display: "grid" }}>
+              <span className="vstack" style={{ minWidth: 0 }}>
                 <span className="small truncate" style={{ color: "var(--fg)" }}>{user.name}</span>
                 <span className="xs muted truncate">{user.role} · {user.email}</span>
               </span>

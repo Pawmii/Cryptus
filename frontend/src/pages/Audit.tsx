@@ -37,7 +37,7 @@ export function Audit() {
               <tr data-href onClick={() => setOpen(open === e.id ? null : e.id)}>
                 <td className="num xs muted">{e.id}</td>
                 <td className="xs nowrap">{dateTime(e.at)}</td>
-                <td className="small"><div><span>{e.actor ?? e.actor_type}</span><span className="xs faint">{e.actor_type}{e.ip ? ` · ${e.ip}` : ""}</span></div></td>
+                <td className="small"><div className="vstack"><span>{e.actor ?? e.actor_type}</span><span className="xs faint">{e.actor_type}{e.ip ? ` · ${e.ip}` : ""}</span></div></td>
                 <td className="mono xs">{e.action}</td>
                 <td className="mono xs muted">{shortHash(e.target, 8, 4)}</td>
                 <td className="mono xs faint">{e.hash.slice(0, 10)}</td>

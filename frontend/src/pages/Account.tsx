@@ -71,7 +71,7 @@ export function Account() {
         </Panel>
         <Panel title="Active sessions" flush actions={<Button size="sm" variant="ghost" onClick={async () => { await api.post("/api/auth/sessions/revoke-others"); sessions.reload(); }}>Sign out others</Button>}>
           <table className="table"><tbody>{(sessions.data ?? []).map((s) => (
-            <tr key={s.id}><td><div><span className="small truncate" style={{ maxWidth: 280 }}>{s.user_agent || "Unknown client"}</span>
+            <tr key={s.id}><td><div className="vstack"><span className="small truncate" style={{ maxWidth: 280 }}>{s.user_agent || "Unknown client"}</span>
               <span className="xs faint mono">{s.ip}</span></div></td>
               <td className="r xs muted">{s.current ? <span className="tag">this device</span> : relative(s.last_seen_at)}</td></tr>))}</tbody></table>
         </Panel>
