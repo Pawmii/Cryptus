@@ -42,6 +42,9 @@ it, and the next pass re-reads from the oldest watched invoice.
 
 ## Managed signing setup
 
+`sudo sh deploy/signer-setup.sh <your TON wallet>` does all of the following for TON (keys, policy, ownership,
+`.env`, start) and prints the remaining console steps. Manually, for any network:
+
 ```bash
 sudo chown -R 10001:10001 deploy/signer        # the container runs as uid 10001
 docker compose -f deploy/docker-compose.yml run --rm signer cryptus-signer init --keystore /signer/keystore.json

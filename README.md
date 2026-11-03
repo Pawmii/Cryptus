@@ -92,7 +92,8 @@ cd /opt/cryptus && sudo sh deploy/install.sh pay.example.com   # Docker, secrets
 ```
 
 **[docs/PRODUCTION.md](docs/PRODUCTION.md)** walks from there to the first real payment in your own TON
-wallet: wizard, wallet, 2FA, backups and shop integration. Caddy terminates TLS automatically.
+wallet: per-order addresses collected automatically (`deploy/signer-setup.sh`) or direct receiving, 2FA,
+backups and shop integration. Caddy terminates TLS automatically.
 Optional profiles: `--profile managed-signing` (isolated signer), `--profile bitcoind` (your own Bitcoin
 Core node). Manual steps and runbooks are in [docs/OPERATIONS.md](docs/OPERATIONS.md).
 

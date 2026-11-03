@@ -16,6 +16,7 @@ export function Wallets() {
   const toast = useToast();
   const [setup, setSetup] = useState<NetworkRow | null>(null);
   const [config, setConfig] = useState<NetworkRow | null>(null);
+  const [change, setChange] = useState<NetworkRow | null>(null);
   if (!nets.data || !kcs.data) return nets.error ? <ErrorBlock error={nets.error} /> : <LoadingBlock />;
   const relevant = nets.data.filter((n) => n.implementation === "implemented" && (n.endpoint_url || n.wallet));
   const reload = () => { nets.reload(); kcs.reload(); };
@@ -45,9 +46,10 @@ export function Wallets() {
           <Panel key={n.key} title={<span className="row">{n.name}<span className="tag">{n.environment}</span></span>}
             actions={<>
               {n.wallet ? <Status value={n.wallet.keychain?.verified_at ? "active" : "pending"} /> : <Status value="not_configured" />}
-              {can("admin") && (n.wallet
-                ? n.wallet.keychain?.mode !== "direct" && <Button size="sm" variant="ghost" onClick={() => setConfig(n)}>Consolidation</Button>
-                : <Button size="sm" variant="primary" icon="plus" onClick={() => setSetup(n)}>Attach wallet</Button>)}
+              {can("admin") && (n.wallet ? <>
+                {n.wallet.keychain?.mode !== "direct" && <Button size="sm" variant="ghost" onClick={() => setConfig(n)}>Consolidation</Button>}
+                <Button size="sm" variant="ghost" onClick={() => setChange(n)}>Change wallet</Button>
+              </> : <Button size="sm" variant="primary" icon="plus" onClick={() => setSetup(n)}>Attach wallet</Button>)}
             </>}>
             {n.wallet?.keychain ? <WalletSummary w={n.wallet} /> : <AttachExisting net={n} keychains={kcs.data!.items} onDone={reload} />}
           </Panel>
@@ -70,6 +72,21 @@ export function Wallets() {
 
       <Dialog wide open={!!setup} onClose={() => setSetup(null)} title={setup ? `Attach a ${setup.name} wallet` : ""}>
         {setup && <KeychainSetup net={setup} onDone={() => { setSetup(null); reload(); }} />}
+      </Dialog>
+      <Dialog open={!!change} onClose={() => setChange(null)} title={change ? `Change the ${change.name} wallet` : ""}
+        description="New invoices will use the wallet you choose. Existing invoices keep their addresses and are still watched.">
+        {change && (
+          <div className="stack">
+            <Alert tone="warning">Funds on per-order addresses of the current keychain are collected only while it is attached.
+              Collect them (Consolidation → Plan) before switching, or switch back later.</Alert>
+            <AttachExisting net={change} keychains={kcs.data.items.filter((k) => k.id !== change.wallet?.keychain_id)}
+              onDone={() => { setChange(null); reload(); toast("success", "Wallet changed"); }}
+              empty="No other verified keychain for this network. Set up a new one, or import the signer's keys." />
+            <div className="row row--end">
+              <Button variant="ghost" icon="plus" onClick={() => { const n = change; setChange(null); setSetup(n); }}>Set up a new one</Button>
+            </div>
+          </div>
+        )}
       </Dialog>
       <Dialog wide open={!!config} onClose={() => setConfig(null)} title={config ? `${config.name} consolidation` : ""}
         description="Sweeps move confirmed deposit balances into your primary wallet. Every sweep is planned from on-chain balances, fee-capped, and (by default) waits for approval.">
@@ -118,11 +135,13 @@ function WalletSummary({ w }: { w: WalletInfo }) {
   );
 }
 
-function AttachExisting({ net, keychains, onDone }: { net: NetworkRow; keychains: Keychain[]; onDone: () => void }) {
+function AttachExisting({ net, keychains, onDone, empty = "No verified keychain for this network yet." }: {
+  net: NetworkRow; keychains: Keychain[]; onDone: () => void; empty?: string;
+}) {
   const toast = useToast();
   const options = keychains.filter((k) => k.family === net.family && k.scope === familyScope(net) && k.verified_at && k.active);
   const [sel, setSel] = useState("");
-  if (!options.length) return <p className="small muted">No verified keychain for this network yet.</p>;
+  if (!options.length) return <p className="small muted">{empty}</p>;
   return (
     <div className="row" style={{ alignItems: "flex-end" }}>
       <div className="grow" style={{ maxWidth: 360 }}>

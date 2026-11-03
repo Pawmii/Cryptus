@@ -291,9 +291,9 @@ class Sweep(Base):
     destination: Mapped[str] = mapped_column(String(128))
     amount: Mapped[str] = mapped_column(Atomic)
     fee_estimate: Mapped[str | None] = mapped_column(Atomic)
-    status: Mapped[str] = mapped_column(String(24), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
     # planned | awaiting_approval | awaiting_external_signature | signing | broadcast | confirmed | failed | cancelled
-    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True)
+    idempotency_key: Mapped[str] = mapped_column(String(200), unique=True)
     approved_by: Mapped[str | None] = mapped_column(String(32))
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     txid: Mapped[str | None] = mapped_column(String(128))

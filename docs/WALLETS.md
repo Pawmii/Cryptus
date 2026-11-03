@@ -100,6 +100,15 @@ merchant's wallet, but they are not attributed to an invoice. Before a direct wa
 runs its `seqno` get-method, which a pasted contract address (for example a jetton wallet) does not have.
 Consolidation and the gas wallet are disabled for direct wallets.
 
+**Collection (managed signing).** One external message per deposit: a native sweep sends the whole balance
+(mode 128) and deploys the wallet in the same transaction. A USDT sweep sends `transfer` to the deposit's
+jetton wallet *and* the remaining GRAM to the destination (mode 128), so no top-up gas is stranded. A sweep
+is `confirmed` only after its whole trace has executed: the wallet transaction, then the recipient's credit
+(native and top-ups) or both jetton wallets (USDT). A bounce or failed hop marks the sweep `failed`; the
+deposit is planned again (at most 5 times). These messages were checked by emulation against the live
+mainnet USDT contracts. Externally signed TON messages (watch-only) are decoded before broadcast: they
+must come from the sweep's source wallet and pay only the planned recipients.
+
 **Recovering TON funds without CRYPTUS.** You need the key and the subwallet id (`0x40000000 + index`,
 shown on each invoice's *Quotes & derivation* panel). `cryptus-signer offline sign-ton` builds the
 external message. Any v4r2-capable library can do the same.

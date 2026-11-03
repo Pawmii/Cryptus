@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, Button, CopyField, Dialog, Empty, ErrorBlock, Kv, LoadingBlock, PageHead, Panel, Segmented, Select, Status,
+import { Alert, Button, CopyField, Dialog, Empty, ErrorBlock, Kv, LoadingBlock, PageHead, Panel, Segmented, Select, Status, Switch,
   Textarea, useToast } from "../components/ui";
 import { api } from "../lib/api";
 import { relative, shortHash } from "../lib/format";
@@ -64,6 +64,21 @@ export function Sweeps() {
           </div>
         </Panel>
       )}
+
+      <Panel>
+        <div className="row row--between">
+          <div className="vstack">
+            <Switch label="Approve every sweep manually" checked={list.data.treasury.require_approval}
+              disabled={user?.role !== "owner" || busy}
+              onChange={(e) => act("/api/admin/treasury/approval", { require_approval: e.target.checked },
+                e.target.checked ? "Sweeps now wait for approval" : "Sweeps now run automatically")} />
+            <span className="xs muted">{list.data.treasury.require_approval
+              ? "Planned sweeps wait in “Needs action” until someone approves them."
+              : "Fully automatic: planned sweeps are signed and sent right away, within the signer's own policy (allowlist, caps, daily limits)."}
+              {user?.role !== "owner" && " Only the owner can change this."}</span>
+          </div>
+        </div>
+      </Panel>
 
       <div className="filters">
         <Segmented label="Filter" value={filter} onChange={setFilter} options={[

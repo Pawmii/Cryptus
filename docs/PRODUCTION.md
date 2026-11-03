@@ -1,8 +1,17 @@
 # Going live
 
-This guide takes a fresh server to accepting real payments into **your own wallet**. The quickest path is
-TON direct receiving, described below. Bitcoin and EVM networks follow the same steps with their own
-wallet types (see [WALLETS](WALLETS.md)).
+This guide takes a fresh server to accepting real payments into **your own wallet**. On TON you choose how
+payments reach it:
+
+| | Per-order addresses (recommended for shops) | Straight to my wallet |
+|---|---|---|
+| What the buyer sees | A fresh address for every order, **no comment needed** | Your wallet address + a required comment |
+| How money reaches your wallet | Collected automatically by the isolated signer (a few minutes after payment) | Directly |
+| Keys on the server | The signer's own seed (not your wallet's), bound by a policy that can only pay your wallet | None |
+| Cost per order | Network fees of the collection (≈ 0.001 GRAM; USDT ≈ 0.01–0.02 GRAM incl. top-up) | None |
+| Set up | Sections 3 and 4 below | Section 3, option B |
+
+Bitcoin and EVM networks follow the same steps with their own wallet types (see [WALLETS](WALLETS.md)).
 
 ## 1. What you need
 
@@ -36,16 +45,57 @@ Open `https://pay.example.com/setup` and paste the setup token.
 1. **Owner account and business details.** The business name is shown on the checkout.
 2. **Networks → TON.** Backend `toncenter`, endpoint `https://toncenter.com`, paste the API key, enable it.
    *Test connection* must report healthy.
-3. **Wallets → TON → "Straight to my wallet".** In your wallet app tap **Receive**, copy the address, paste
-   it and press *Continue*. Compare it character by character, paste it again and press *Verify & attach*.
+3. **Wallets.** Either
+   - **A — per-order addresses:** skip this step in the wizard and continue with section 3a below, or
+   - **B — straight to my wallet:** *Wallets → TON → "Straight to my wallet"*. In your wallet app tap
+     **Receive**, copy the address, paste it and press *Continue*. Compare it character by character, paste it
+     again and press *Verify & attach*.
 
-USDT on TON is enabled by default. It arrives in the same wallet: your wallet's USDT balance.
+USDT on TON is enabled by default. It ends up in your wallet's USDT balance either way.
+
+## 3a. Per-order addresses, collected into your wallet
+
+Every order gets its own deposit address (a TON wallet contract derived from the signer's key with a unique
+*subwallet id*; see [WALLETS](WALLETS.md)). Once the invoice is paid, CRYPTUS collects the funds into your
+main wallet automatically. The signer that holds the deposit keys runs in its own container with no
+internet access and no database access. Its policy only allows payments **to your wallet**.
+
+1. On the server, with your main wallet's address (Tonkeeper → *Receive*):
+
+   ```bash
+   cd /opt/cryptus && sudo sh deploy/signer-setup.sh UQ…your-main-wallet
+   ```
+
+   The script creates the signer's keys and prints **two recovery phrases once**. Write them on paper and
+   keep them offline: they are the only way to reach funds still sitting on deposit addresses if the server
+   is lost. It also writes `deploy/signer/policy.json` (allowlist = your wallet, at most 10,000 USDT
+   collected per 24 h; edit to taste) and starts the signer.
+2. Console → *Wallets* → **Import signer keys**. In the TON panel, choose the `Signer · ton` keychain and
+   press *Attach*.
+3. *Wallets → TON → Consolidation*: destination = your main wallet (the same address as in the policy),
+   **Automatic planning** on. "Run every 10 min" collects soon after payment. Save.
+4. Send about **1 GRAM** to the **gas wallet** shown on the TON panel. It pays the small top-up that a USDT
+   deposit needs before its tokens can be moved (≈ 0.1 GRAM per USDT order, most of which returns to your
+   main wallet in the same collection). GRAM deposits pay their own fee and need no top-up.
+5. *Consolidation* page → switch off **Approve every sweep manually** (owner only) to make collection fully
+   automatic. Leave it on if you prefer to approve each transfer.
+
+What happens per order: the buyer pays → the invoice is `paid` → within the next run the worker plans a
+sweep from the live chain balance → the signer checks it against its policy and signs → CRYPTUS follows the
+transaction until the money has **arrived** in your wallet (for USDT, through both jetton wallets) and
+only then marks it `confirmed`. A sweep that fails (expired message, bounce) is planned again, at most 5
+times, and each failure raises a `sweep.failed` webhook.
+
+To stop everything instantly: *Consolidation → Emergency stop*, or `touch /opt/cryptus/deploy/signer/HALT`
+on the server.
 
 ## 4. Lock it down
 
 - *Account* → enable two-factor authentication. Then *Settings → Security* → **Require 2FA for admins**.
 - If you have a static IP or a VPN, restrict `/api/admin/*` to it in `deploy/Caddyfile` (an example is
   commented in the file), then run `docker compose -f deploy/docker-compose.yml --env-file deploy/.env restart caddy`.
+- If you use per-order addresses, keep the signer's recovery phrases offline, and keep only a small balance
+  on the gas wallet.
 - Install nightly backups:
   `echo "17 3 * * * root sh /opt/cryptus/deploy/backup.sh" > /etc/cron.d/cryptus-backup`
   and copy `/var/backups/cryptus` off the server regularly.

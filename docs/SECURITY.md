@@ -41,6 +41,8 @@
 * The merchant API has no built-in rate limit. Put one in front of `/api/v1` at the proxy if keys may leak.
 * TON direct mode credits only transfers that carry the invoice's comment. Payments without it reach the
   merchant's wallet but stay unattributed until the merchant resolves them with the payer.
+* With `deploy/signer-setup.sh` the signer runs on the same host as the gateway, isolated by container and
+  network (no internet, no database). For stronger isolation, move it to a separate machine (see OPERATIONS).
 * TON native sweeps send the whole wallet balance. The signer's daily limits apply to jetton amounts and
   top-ups, not to that balance, which is still bounded by the allowlisted destination.
 

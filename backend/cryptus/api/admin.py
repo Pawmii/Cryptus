@@ -533,6 +533,19 @@ def treasury_halt(body: HaltIn, request: Request, p: Principal = Depends(require
     return settings_svc.get(db, "treasury")
 
 
+class ApprovalIn(BaseModel):
+    require_approval: bool
+
+
+@router.post("/treasury/approval")
+def treasury_approval(body: ApprovalIn, request: Request, p: Principal = Depends(require("owner")), db: Session = DB):
+    """Whether every planned sweep waits for a person. Off = fully automatic (still bound by the signer policy)."""
+    settings_svc.put(db, "treasury", {"require_approval": body.require_approval})
+    audit.record(db, p.actor(request), "treasury.approval_required" if body.require_approval
+                 else "treasury.approval_waived", None)
+    return settings_svc.get(db, "treasury")
+
+
 @router.get("/signer")
 def signer_status(p: Principal = Depends(require("admin"))):
     if not signer_client.configured():

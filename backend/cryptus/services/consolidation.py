@@ -18,10 +18,11 @@ Safety rules (enforced here *and* independently by the signer):
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..chains.base import ChainError
@@ -49,6 +50,8 @@ TON_JETTON_ATTACH = 50_000_000     # 0.05 GRAM forwarded to the jetton wallet fo
 TON_JETTON_MIN_GAS = 100_000_000   # deposit must hold ≥ 0.1 GRAM before a jetton sweep (deploy + transfer)
 TON_NATIVE_MIN = 20_000_000        # do not sweep dust below 0.02 GRAM
 MAX_ATTEMPTS = 3
+MAX_REPLANS = 5                    # a deposit whose sweep keeps failing is re-planned at most this many times
+TON_SETTLE_WINDOW = timedelta(minutes=15)
 
 
 class SweepError(RuntimeError):
@@ -86,6 +89,7 @@ def _eligible_deposits(db: Session, network: str) -> list[DepositAddress]:
     Only deposits with a confirmed payment newer than their last sweep qualify, so unpaid addresses are never
     polled again and value that arrives after a sweep is still collected."""
     now = utcnow()
+    nw_keychain = db.get(NetworkWallet, network).keychain_id
     busy = set()
     for s in db.execute(select(Sweep).where(Sweep.network == network, Sweep.status.in_(ACTIVE))).scalars():
         busy.update(s.deposit_ids or [])
@@ -95,7 +99,10 @@ def _eligible_deposits(db: Session, network: str) -> list[DepositAddress]:
     q = (select(DepositAddress, Invoice, last_paid.c.at)
          .join(Invoice, Invoice.id == DepositAddress.invoice_id)
          .join(last_paid, last_paid.c.deposit_id == DepositAddress.id)
-         .where(DepositAddress.network == network, DepositAddress.memo == ""))  # memo deposits = merchant's wallet
+         .where(DepositAddress.network == network, DepositAddress.memo == "",  # memo deposits = merchant's wallet
+                # only deposits derived from the keychain attached now can be signed for; deposits of a previously
+                # attached keychain are collected again when that keychain is re-attached
+                DepositAddress.keychain_id == nw_keychain))
     out = []
     for d, inv, paid_at in db.execute(q).all():
         if d.id in busy or (d.swept_at and paid_at and paid_at <= d.swept_at):
@@ -114,11 +121,22 @@ class _Batch:
         self.specs: list[dict] = []
 
     def add(self, **kw) -> str | None:
+        """Returns the idempotency key the work is (or will be) recorded under, or None if it is blocked."""
         key = kw["idempotency_key"]
         if any(x["idempotency_key"] == key for x in self.specs):
             return key
-        if self.db.execute(select(Sweep.id).where(Sweep.idempotency_key == key)).first():
-            return key  # already planned earlier; dependants still link to it
+        tries = self.db.execute(select(Sweep).where(or_(Sweep.idempotency_key == key,
+                                                        Sweep.idempotency_key.startswith(key + "#", autoescape=True)))
+                                .order_by(Sweep.created_at)).scalars().all()
+        if tries:
+            last = tries[-1]
+            if last.status != "failed":
+                return last.idempotency_key  # already planned (or done); dependants still link to it
+            if len(tries) >= MAX_REPLANS:
+                log.warning("%s: %s failed %d times; not re-planning automatically", kw["network"], key, len(tries))
+                return None
+            # A failed attempt (expired message, bounce, signer refusal) must not strand the funds: plan again.
+            key = kw["idempotency_key"] = f"{key}#{len(tries) + 1}"
         self.specs.append(kw)
         return key
 
@@ -196,7 +214,8 @@ def _plan_btc(db, batch: _Batch, adapter: BitcoinAdapter, nw, kc, deps) -> None:
         log.warning("%s: sweep fee %s exceeds cap %s", nw.network, fee, cap)
         return
     used = sorted({by_addr[u["address"]].id for u in utxos})
-    key = f"{nw.network}:btc:" + ",".join(sorted(f"{u['txid']}:{u['vout']}" for u in utxos))
+    outpoints = ",".join(sorted(f"{u['txid']}:{u['vout']}" for u in utxos))
+    key = f"{nw.network}:btc:" + hashlib.sha256(outpoints.encode()).hexdigest()  # bounded length, any input count
     batch.add(network=nw.network, asset_id=asset.id, kind="sweep", deposit_ids=used, destination=nw.destination,
               amount=str(amount), fee_estimate=str(fee), idempotency_key=key,
               artifact={"psbt": psbt, "feerate_sat_vb": feerate, "inputs": len(utxos)})
@@ -248,6 +267,8 @@ def _plan_evm(db, batch: _Batch, adapter: EvmAdapter, nw, kc, deps) -> None:
                                  "gas": EVM_GAS_NATIVE, "chainId": net.chain_id, **fees},
                           "role": "gas_station", "index": 0,
                           "intent": {"type": "gas_topup", "recipient_index": d.derivation_index, "amount": need}})
+            if topup_key is None:
+                continue
         batch.add(network=nw.network, asset_id=asset.id, kind="sweep", deposit_ids=[d.id],
                   source_address=d.display_address, destination=nw.destination, amount=str(bal),
                   fee_estimate=str(cost), idempotency_key=f"{nw.network}:token:{d.id}:{bal}", depends_on_key=topup_key,
@@ -290,6 +311,8 @@ def _plan_ton(db, batch: _Batch, adapter: TonAdapter, nw, kc, deps) -> None:
                 idempotency_key=f"{nw.network}:gas:{d.id}:{bal}:{st['balance']}",
                 artifact={"role": "gas_wallet", "subwallet_id": TON_DEFAULT_SUBWALLET,
                           "intent": {"type": "gas_topup", "recipient_index": d.derivation_index, "amount": need}})
+            if topup_key is None:
+                continue
         batch.add(network=nw.network, asset_id=asset.id, kind="sweep", deposit_ids=[d.id],
                   source_address=d.display_address, destination=nw.destination, amount=str(bal),
                   fee_estimate=str(TON_JETTON_ATTACH), idempotency_key=f"{nw.network}:jetton:{d.id}:{bal}",
@@ -353,7 +376,8 @@ def advance(db: Session, s: Sweep) -> None:
             dep = db.get(Sweep, s.depends_on)
             if dep and dep.status != "confirmed":
                 if dep.status in ("failed", "cancelled"):
-                    s.status, s.error = "cancelled", "gas top-up did not complete"
+                    s.status, s.error = "failed", "gas top-up did not complete"  # re-planned with a new top-up
+                    emit(db, "sweep.failed", sweep_view(db, s))
                 return
         try:
             _verify_still_valid(db, s)
@@ -498,7 +522,19 @@ def submit_external(db: Session, s: Sweep, signed: str, actor: audit.Actor) -> N
             raise SweepError("signed transaction spends different inputs than the planned sweep")
         raw = tx.serialize().hex()
     elif fam == "ton":
-        cell = ton_wallet.boc_b64_to_cell(signed)
+        try:
+            cell = ton_wallet.boc_b64_to_cell(signed)
+            src, dests = ton_wallet.parse_wallet_external(cell)
+        except Exception as exc:
+            raise SweepError(f"could not decode the signed TON message: {exc}") from exc
+        if src != normalize_address("ton", s.source_address):
+            raise SweepError("signed message is for a different wallet than this sweep's source")
+        intent = s.artifact["intent"]
+        allowed = {normalize_address("ton", s.destination)}
+        if intent["type"] == "sweep_jetton":
+            allowed.add(normalize_address("ton", intent["jetton_wallet"]))
+        if not dests or not set(dests) <= allowed:
+            raise SweepError("signed message sends value to an address that is not part of the planned sweep")
         s.artifact = {**s.artifact, "msg_hash": cell.hash.hex()}
         raw = signed
     else:
@@ -544,12 +580,22 @@ def _track(db: Session, s: Sweep) -> None:
                 s.status, s.error = "failed", "external message was not executed (expired)"
                 emit(db, "sweep.failed", sweep_view(db, s))
             return
-        d = tx.get("description", {})
-        if d.get("aborted") and (d.get("compute_ph") or {}).get("success") is False:
-            s.status, s.error = "failed", "wallet rejected the message"
+        txid = base64.b64decode(tx["hash"]).hex() if tx.get("hash") else s.txid
+        if s.txid != txid:
+            s.txid = txid
+        state, delivered = adapter.sweep_outcome(tx, s.artifact["intent"], s.destination)
+        if state == "pending":
+            if utcnow() - s.updated_at > TON_SETTLE_WINDOW:
+                s.status, s.error = "failed", "the transfer did not complete on chain"
+                emit(db, "sweep.failed", sweep_view(db, s))
+            return
+        if state == "failed":
+            s.status, s.error = "failed", "the transfer failed on chain (rejected or bounced); funds stay at the source"
+            audit.record(db, audit.SYSTEM, "sweep.failed_on_chain", s.id, txid=s.txid)
             emit(db, "sweep.failed", sweep_view(db, s))
             return
-        s.txid = base64.b64decode(tx["hash"]).hex() if tx.get("hash") else s.txid
+        if delivered and s.kind == "sweep" and s.artifact["intent"]["type"] == "sweep_native":
+            s.amount = str(delivered)  # whole-balance sweep: record what actually arrived
         ok = True
     else:
         if fam == "evm":

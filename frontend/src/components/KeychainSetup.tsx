@@ -100,7 +100,7 @@ export function KeychainSetup({ net, onDone }: { net: NetworkRow; onDone: (kc: K
           <ModeOption active={direct} onClick={() => setMode("direct")} icon="wallet" title="Straight to my wallet"
             text="Customers pay your own wallet. Each invoice gets a unique comment (memo) that CRYPTUS matches. No keys on the server, nothing to sweep." />
           <ModeOption active={!direct} onClick={() => setMode("watch_only")} icon="key" title="Separate address per invoice"
-            text="No memo needed. Funds stay in per-invoice contracts until you consolidate them (signer or offline signing)." />
+            text="No memo needed. Funds are collected into your wallet afterwards. For automatic collection run deploy/signer-setup.sh and use Wallets → Import signer keys instead of this form." />
         </div>
       )}
       {direct ? (

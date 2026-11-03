@@ -179,8 +179,12 @@ def sign_ton(ring: KeyRing, net: NetworkDef, payload: dict, pol: NetPolicy | Non
         body = ton_wallet.jetton_transfer_body(query_id=seqno, amount=int(intent["amount"]), destination=d,
                                                response_destination=d)
         jw = ton_wallet.parse_address(intent["jetton_wallet"])
+        # 1) the jetton transfer, 2) whatever GRAM is left (top-up remainder) to the same allowlisted destination,
+        # so no gas is stranded on deposit wallets.
         msgs = [(ton_wallet.SEND_MODE_PAY_FEES_SEPARATELY,
-                 ton_wallet.internal_message(dest=jw, value=attach, bounce=True, body=body))]
+                 ton_wallet.internal_message(dest=jw, value=attach, bounce=True, body=body)),
+                (ton_wallet.SEND_MODE_CARRY_ALL_BALANCE,
+                 ton_wallet.internal_message(dest=d, value=0, bounce=d.is_bounceable))]
         asset, amount = f"{net.key}:jetton:*", int(intent["amount"])
     elif kind == "gas_topup":
         if role != "gas_wallet":

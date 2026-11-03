@@ -61,6 +61,21 @@ def b64_to_hex(h: str) -> str:
         return h
 
 
+def _executed(tx: dict) -> bool:
+    """A contract ran the message to completion: not aborted, compute and action phases succeeded."""
+    d = tx.get("description") or {}
+    return not d.get("aborted") and bool((d.get("compute_ph") or {}).get("success")) \
+        and (d.get("action") or {}).get("success") is not False
+
+
+def _opcode(msg: dict) -> int | None:
+    op = msg.get("opcode")
+    try:
+        return int(op, 16) if isinstance(op, str) else (int(op) if op is not None else None)
+    except ValueError:
+        return None
+
+
 def _body(tx: dict) -> Cell:
     b64 = ((tx.get("in_msg") or {}).get("message_content") or {}).get("body")
     return Cell.one_from_boc(base64.b64decode(b64)) if b64 else Cell.empty()
@@ -361,6 +376,42 @@ class TonAdapter(ChainAdapter):
         body = self._req("POST", "/api/v2/sendBocReturnHash", json={"boc": raw})
         res = body.get("result", {})
         return b64_to_hex(res.get("hash")) if isinstance(res, dict) and res.get("hash") else ton_wallet.boc_b64_to_cell(raw).hash.hex()
+
+    def sweep_outcome(self, tx: dict, intent: dict, destination: str) -> tuple[str, int | None]:
+        """("ok" | "pending" | "failed", delivered GRAM) for the wallet transaction that executed a sweep.
+
+        The wallet accepting the message is not enough: the value must arrive. Native sweeps and top-ups are
+        followed to the recipient's transaction (credited, not bounced); jetton sweeps through the deposit's
+        jetton wallet to the destination's jetton wallet, every hop executed successfully."""
+        if not _executed(tx):
+            return "failed", None
+        outs = tx.get("out_msgs") or []
+        if intent["type"] == "sweep_jetton":
+            hop = next((o for o in outs if norm(o.get("destination")) == norm(intent["jetton_wallet"])), None)
+            if hop is None:
+                return "failed", None
+            jtx = self.tx_by_message(b64_to_hex(hop["hash"]))
+            if jtx is None:
+                return "pending", None
+            if not _executed(jtx):
+                return "failed", None
+            nxt = next((o for o in jtx.get("out_msgs") or [] if _opcode(o) == ton_wallet.OP_JETTON_INTERNAL_TRANSFER),
+                       None)
+            if nxt is None:
+                return "failed", None
+            rtx = self.tx_by_message(b64_to_hex(nxt["hash"]))
+            if rtx is None:
+                return "pending", None
+            return ("ok" if _executed(rtx) else "failed"), None
+        hop = next((o for o in outs if norm(o.get("destination")) == norm(destination)
+                    and int(o.get("value") or 0) > 0), None)
+        if hop is None:
+            return "failed", None
+        rtx = self.tx_by_message(b64_to_hex(hop["hash"]))
+        if rtx is None:
+            return "pending", None
+        got = self._native_credit(rtx)
+        return ("ok", got[0]) if got else ("failed", None)
 
     def tx_by_message(self, msg_hash_hex: str) -> dict | None:
         h = base64.b64encode(bytes.fromhex(msg_hash_hex)).decode()

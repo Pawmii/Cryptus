@@ -68,3 +68,31 @@ def test_follow_up_request_sees_the_session(client, db_url):
     finally:
         server.should_exit = True
         t.join(5)
+
+
+def test_schema_matches_migrations(db_url):
+    """The migrated database must equal the models (column types and lengths included). PostgreSQL enforces
+    VARCHAR lengths that SQLite ignores; drift here once made watch-only sweeps fail only in production."""
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+    from sqlalchemy import create_engine
+
+    from cryptus import models  # noqa: F401
+    from cryptus.db import Base
+    from cryptus.migrate import upgrade
+
+    upgrade(db_url)
+    eng = create_engine(db_url)
+    with eng.connect() as conn:
+        ctx = MigrationContext.configure(conn, opts={"compare_type": True})
+        diff = compare_metadata(ctx, Base.metadata)
+    eng.dispose()
+    assert diff == [], diff
+
+
+def test_status_values_fit_their_columns():
+    from cryptus.models import Sweep
+
+    longest = max(("planned", "awaiting_approval", "approved", "awaiting_external_signature", "signing", "broadcast",
+                   "confirmed", "failed", "cancelled"), key=len)
+    assert Sweep.__table__.c.status.type.length >= len(longest)

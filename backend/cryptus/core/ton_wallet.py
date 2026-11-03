@@ -185,5 +185,21 @@ def build_external(*, public_key: bytes, subwallet_id: int, seqno: int, messages
     return cell, b64encode(cell.to_boc()).decode()
 
 
+def parse_wallet_external(cell: Cell) -> tuple[str, list[str]]:
+    """(wallet address, internal message destinations) of a signed wallet v3/v4 external message."""
+    msg = MessageAny.deserialize(cell.begin_parse())
+    if not isinstance(msg.info, ExternalMsgInfo):
+        raise ValueError("not an external message")
+    body = msg.body.begin_parse()
+    body.skip_bits(512 + 32 + 32 + 32)  # signature, subwallet id, valid_until, seqno
+    if body.remaining_bits >= 8 and body.load_uint(8) != 0:
+        raise ValueError("only simple-send wallet messages are accepted")
+    dests = []
+    while body.remaining_refs:
+        out = MessageAny.deserialize(body.load_ref().begin_parse())
+        dests.append(out.info.dest.to_str(is_user_friendly=False))
+    return msg.info.dest.to_str(is_user_friendly=False), dests
+
+
 def boc_b64_to_cell(b64: str) -> Cell:
     return Cell.one_from_boc(b64decode(b64))

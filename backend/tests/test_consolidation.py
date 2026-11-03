@@ -205,3 +205,75 @@ def test_fee_spike_blocks_signing(client, ring, monkeypatch, setup_managed):
         consolidation.advance(s, sw)
         assert sw.status == "broadcast", sw.error
         assert int(sw.amount) == 5 * 10**17 - 21_000 * 2 * 10**9
+
+
+def test_failed_sweep_is_replanned_a_bounded_number_of_times(client, ring, monkeypatch, setup_managed):
+    from cryptus import db as dbm
+    from cryptus.models import Sweep
+    from cryptus.services import consolidation, monitor
+
+    fake, _ = setup_managed
+    scripted = ScriptedChain()
+    monkeypatch.setattr("cryptus.services.monitor.adapter_for", lambda db, key: scripted)
+    monkeypatch.setattr("cryptus.services.invoices.adapter_for", lambda db, key: scripted)
+    key = client.post("/api/admin/api-keys", json={"name": "t", "mode": "test"}).json()["key"]
+    inv = client.post("/api/v1/invoices", json={"amount": "0.5", "currency": "eth-sepolia:native"},
+                      headers={"Authorization": f"Bearer {key}"}).json()
+    dep_id, addr = inv["payment"]["id"], inv["payment"]["address"]
+    scripted.observed = [Observed(dep_id, "0xp", -1, "eth-sepolia:native", 5 * 10**17, None, 1, "b", 9)]
+    scripted.state["0xp"] = TxState(True, 9, 1, "b", amount=5 * 10**17)
+    with dbm.session_scope() as s:
+        monitor.run_network(s, "eth-sepolia")
+    fake.balances[(addr.lower(), "eth-sepolia:native")] = 5 * 10**17
+    keys = []
+    for _ in range(consolidation.MAX_REPLANS + 1):
+        with dbm.session_scope() as s:
+            planned = consolidation.plan(s, "eth-sepolia", force=True)
+            again = consolidation.plan(s, "eth-sepolia", force=True)
+            assert again == []  # while one is in flight, nothing is planned twice
+            for sw in planned:
+                keys.append(sw.idempotency_key)
+                sw.status, sw.error = "failed", "message expired"  # e.g. never included on chain
+    base = keys[0]
+    assert keys == [base] + [f"{base}#{n}" for n in range(2, consolidation.MAX_REPLANS + 1)]
+    with dbm.session_scope() as s:
+        assert s.query(Sweep).count() == consolidation.MAX_REPLANS
+
+
+def test_only_deposits_of_the_attached_keychain_are_swept(client, ring, monkeypatch, setup_managed):
+    from embit import bip32, bip39
+
+    from cryptus import db as dbm
+    from cryptus.services import consolidation, infra, monitor
+    from cryptus.services.audit import Actor
+
+    fake, _ = setup_managed
+    scripted = ScriptedChain()
+    monkeypatch.setattr("cryptus.services.monitor.adapter_for", lambda db, key: scripted)
+    monkeypatch.setattr("cryptus.services.invoices.adapter_for", lambda db, key: scripted)
+    key = client.post("/api/admin/api-keys", json={"name": "t", "mode": "test"}).json()["key"]
+    inv = client.post("/api/v1/invoices", json={"amount": "0.5", "currency": "eth-sepolia:native"},
+                      headers={"Authorization": f"Bearer {key}"}).json()
+    dep_id, addr = inv["payment"]["id"], inv["payment"]["address"]
+    scripted.observed = [Observed(dep_id, "0xp", -1, "eth-sepolia:native", 5 * 10**17, None, 1, "b", 9)]
+    scripted.state["0xp"] = TxState(True, 9, 1, "b", amount=5 * 10**17)
+    with dbm.session_scope() as s:
+        monitor.run_network(s, "eth-sepolia")
+    fake.balances[(addr.lower(), "eth-sepolia:native")] = 5 * 10**17
+
+    other = bip32.HDKey.from_seed(bip39.mnemonic_to_seed("legal winner thank year wave sausage worth useful legal "
+                                                          "winner thank yellow")).derive("m/44h/60h/0h").to_public()
+    actor = Actor("user", None, "test")
+    with dbm.session_scope() as s:
+        managed = __import__("cryptus.models", fromlist=["x"]).NetworkWallet
+        original = s.get(managed, "eth-sepolia").keychain_id
+        kc = infra.create_keychain(s, actor, family="evm", scope="evm", public_material=other.to_string(),
+                                   mode="watch_only", label="other")
+        kc.verified_at = dbm.utcnow()
+        infra.attach_wallet(s, actor, "eth-sepolia", kc.id)
+        infra.set_destination(s, actor, "eth-sepolia", DEST)
+        assert consolidation.plan(s, "eth-sepolia", force=True) == []  # the new key cannot sign for old deposits
+        infra.attach_wallet(s, actor, "eth-sepolia", original)
+        infra.set_destination(s, actor, "eth-sepolia", DEST)
+        (sw,) = consolidation.plan(s, "eth-sepolia", force=True)
+        assert sw.deposit_ids == [dep_id]
