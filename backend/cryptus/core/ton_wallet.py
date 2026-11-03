@@ -185,8 +185,8 @@ def build_external(*, public_key: bytes, subwallet_id: int, seqno: int, messages
     return cell, b64encode(cell.to_boc()).decode()
 
 
-def parse_wallet_external(cell: Cell) -> tuple[str, list[str]]:
-    """(wallet address, internal message destinations) of a signed wallet v3/v4 external message."""
+def parse_wallet_messages(cell: Cell) -> tuple[str, list[dict]]:
+    """(wallet address, [{dest, value, body}]) of the internal messages in a signed wallet v4 external message."""
     msg = MessageAny.deserialize(cell.begin_parse())
     if not isinstance(msg.info, ExternalMsgInfo):
         raise ValueError("not an external message")
@@ -194,11 +194,36 @@ def parse_wallet_external(cell: Cell) -> tuple[str, list[str]]:
     body.skip_bits(512 + 32 + 32 + 32)  # signature, subwallet id, valid_until, seqno
     if body.remaining_bits >= 8 and body.load_uint(8) != 0:
         raise ValueError("only simple-send wallet messages are accepted")
-    dests = []
+    out = []
     while body.remaining_refs:
-        out = MessageAny.deserialize(body.load_ref().begin_parse())
-        dests.append(out.info.dest.to_str(is_user_friendly=False))
-    return msg.info.dest.to_str(is_user_friendly=False), dests
+        m = MessageAny.deserialize(body.load_ref().begin_parse())
+        if not isinstance(m.info, InternalMsgInfo):
+            raise ValueError("wallet message is not an internal message")
+        out.append({"dest": m.info.dest.to_str(is_user_friendly=False), "value": m.info.value.grams,
+                    "body": m.body or Cell.empty()})
+    return msg.info.dest.to_str(is_user_friendly=False), out
+
+
+def parse_wallet_external(cell: Cell) -> tuple[str, list[str]]:
+    """(wallet address, internal message destinations) of a signed wallet v4 external message."""
+    src, msgs = parse_wallet_messages(cell)
+    return src, [m["dest"] for m in msgs]
+
+
+def is_empty(body: Cell) -> bool:
+    return not body.bits and not body.refs
+
+
+def parse_jetton_transfer(body: Cell) -> dict | None:
+    """Decode an outgoing jetton ``transfer`` (TEP-74) sent by an owner to its jetton wallet."""
+    s = body.begin_parse()
+    if s.remaining_bits < 32 or s.load_uint(32) != OP_JETTON_TRANSFER:
+        return None
+    s.load_uint(64)  # query id
+    amount = s.load_coins()
+    dest, response = s.load_address(), s.load_address()
+    return {"amount": amount, "destination": dest.to_str(is_user_friendly=False) if dest else None,
+            "response": response.to_str(is_user_friendly=False) if response else None}
 
 
 def boc_b64_to_cell(b64: str) -> Cell:

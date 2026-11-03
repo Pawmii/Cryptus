@@ -84,7 +84,9 @@ What happens per order: the buyer pays → the invoice is `paid` → within the 
 sweep from the live chain balance → the signer checks it against its policy and signs → CRYPTUS follows the
 transaction until the money has **arrived** in your wallet (for USDT, through both jetton wallets) and
 only then marks it `confirmed`. A sweep that fails (expired message, bounce) is planned again, at most 5
-times, and each failure raises a `sweep.failed` webhook.
+times per deposit, and each failure raises a `sweep.failed` webhook. A sweep you cancel is not planned again
+on its own. If the money has left the deposit but the indexer has not yet shown it arriving, the sweep stays
+`broadcast` with a note instead of failing.
 
 To stop everything instantly: *Consolidation → Emergency stop*, or `touch /opt/cryptus/deploy/signer/HALT`
 on the server.

@@ -165,3 +165,63 @@ def test_only_owner_can_waive_approvals(client):
     assert r.status_code == 200, r.text
     client.headers["X-CSRF-Token"] = r.json()["csrf_token"]
     assert client.post("/api/admin/treasury/approval", json={"require_approval": True}).status_code == 403
+
+
+def test_external_jetton_transfer_body_must_match_plan(client, ring, external_sweep):
+    from cryptus import db as dbm
+    from cryptus.core import derivation
+    from cryptus.models import Sweep
+    from cryptus.services import consolidation
+    from cryptus.services.audit import Actor
+
+    sid, sent = external_sweep
+    intent = {"type": "sweep_jetton", "jetton_wallet": JW, "destination": DEST, "amount": 25_000_000,
+              "attach": 50_000_000}
+    with dbm.session_scope() as s:
+        sw = s.get(Sweep, sid)
+        sw.asset_id, sw.artifact = "ton:jetton:x", {**sw.artifact, "intent": intent}
+
+    def forged(destination=DEST, amount=25_000_000, attach=50_000_000):
+        d = ton_wallet.parse_address(destination)
+        body = ton_wallet.jetton_transfer_body(query_id=0, amount=amount, destination=d, response_destination=d)
+        msg = ton_wallet.internal_message(dest=ton_wallet.parse_address(JW), value=attach, bounce=True, body=body)
+        return ton_wallet.build_external(public_key=ring.ton_public_key, subwallet_id=derivation.ton_subwallet_id(3),
+                                         seqno=0, messages=[(1, msg)], sign=ring.ton_sign)[1]
+
+    thief = ton_wallet.friendly(ton_wallet.wallet_address(bytes([7]) * 32, 698983191), bounceable=False, testnet=False)
+    with dbm.session_scope() as s:
+        sw = s.get(Sweep, sid)
+        for bad in (forged(destination=thief), forged(amount=1), forged(attach=10**9)):
+            with pytest.raises(consolidation.SweepError, match="differs from the planned sweep"):
+                consolidation.submit_external(s, sw, bad, Actor("user", "u", "op"))
+        assert not sent
+        good = _sign(ring, intent)
+        consolidation.submit_external(s, sw, good["boc"], Actor("user", "u", "op"))
+        assert sw.status == "broadcast"
+
+
+def test_executed_sweep_awaiting_delivery_is_never_failed(client, monkeypatch):
+    import time
+
+    from cryptus import db as dbm
+    from cryptus.models import Sweep
+    from cryptus.services import consolidation
+
+    executed = {"hash": _h(9), "now": int(time.time()) - 3600}
+
+    class Slow:
+        def tx_by_message(self, h):
+            return executed
+
+        def sweep_outcome(self, tx, intent, destination):
+            return "pending", None  # the indexer has not shown the recipient's transaction yet
+
+    monkeypatch.setattr("cryptus.services.consolidation.adapter_for", lambda db, key: Slow())
+    with dbm.session_scope() as s:
+        sw = Sweep(network="ton", asset_id="ton:native", kind="sweep", deposit_ids=[], source_address=DEST,
+                   destination=DEST, amount="1", status="broadcast", idempotency_key="slow",
+                   artifact={"msg_hash": "00" * 32, "intent": {"type": "sweep_native", "destination": DEST}})
+        s.add(sw)
+        s.flush()
+        consolidation._track(s, sw)
+        assert sw.status == "broadcast" and "not confirmed yet" in sw.error

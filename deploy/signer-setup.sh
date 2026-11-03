@@ -62,7 +62,12 @@ fi
 
 say "Connecting the gateway to the signer"
 grep -q '^CRYPTUS_SIGNER_URL=' .env || echo 'CRYPTUS_SIGNER_URL=http://signer:8700' >> .env
-grep -q '^COMPOSE_PROFILES=' .env || echo 'COMPOSE_PROFILES=managed-signing' >> .env
+if ! grep -q '^COMPOSE_PROFILES=' .env; then
+  echo 'COMPOSE_PROFILES=managed-signing' >> .env
+elif ! grep -q '^COMPOSE_PROFILES=.*managed-signing' .env; then  # keep profiles already enabled (e.g. bitcoind)
+  sed -i -e 's/^COMPOSE_PROFILES=\(..*\)$/COMPOSE_PROFILES=\1,managed-signing/' \
+         -e 's/^COMPOSE_PROFILES=$/COMPOSE_PROFILES=managed-signing/' .env
+fi
 $COMPOSE up -d
 
 cat <<EOF

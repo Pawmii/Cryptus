@@ -277,3 +277,105 @@ def test_only_deposits_of_the_attached_keychain_are_swept(client, ring, monkeypa
         infra.set_destination(s, actor, "eth-sepolia", DEST)
         (sw,) = consolidation.plan(s, "eth-sepolia", force=True)
         assert sw.deposit_ids == [dep_id]
+
+
+def _paid_deposit(client, monkeypatch, fake, currency, amount_atomic, amount="0.5"):
+    from cryptus import db as dbm
+    from cryptus.services import monitor
+
+    scripted = ScriptedChain()
+    monkeypatch.setattr("cryptus.services.monitor.adapter_for", lambda db, key: scripted)
+    monkeypatch.setattr("cryptus.services.invoices.adapter_for", lambda db, key: scripted)
+    key = client.post("/api/admin/api-keys", json={"name": "t", "mode": "test"}).json()["key"]
+    inv = client.post("/api/v1/invoices", json={"amount": amount, "currency": currency},
+                      headers={"Authorization": f"Bearer {key}"}).json()
+    dep_id, addr = inv["payment"]["id"], inv["payment"]["address"]
+    scripted.observed = [Observed(dep_id, "0xp", -1 if currency.endswith("native") else 0, currency, amount_atomic,
+                                  None, 1, "b", 9)]
+    scripted.state["0xp"] = TxState(True, 9, 1, "b", amount=amount_atomic)
+    with dbm.session_scope() as s:
+        monitor.run_network(s, "eth-sepolia")
+    fake.balances[(addr.lower(), currency)] = amount_atomic
+    return dep_id, addr, scripted
+
+
+def test_replan_limit_holds_when_each_failure_changes_the_balance(client, ring, monkeypatch, setup_managed):
+    from cryptus import db as dbm
+    from cryptus.services import consolidation
+
+    fake, _ = setup_managed
+    _, addr, _ = _paid_deposit(client, monkeypatch, fake, "eth-sepolia:native", 5 * 10**17)
+    planned_total = 0
+    for n in range(consolidation.MAX_REPLANS + 3):
+        fake.balances[(addr.lower(), "eth-sepolia:native")] = 5 * 10**17 - n * 10**15  # e.g. fees burnt by a bounce
+        with dbm.session_scope() as s:
+            for sw in consolidation.plan(s, "eth-sepolia", force=True):
+                planned_total += 1
+                sw.status, sw.error = "failed", "bounced"
+    assert planned_total == consolidation.MAX_REPLANS
+
+
+def test_second_payment_of_the_same_amount_is_swept_again(client, ring, monkeypatch, setup_managed):
+    from cryptus import db as dbm
+    from cryptus.models import DepositAddress, Payment
+    from cryptus.services import consolidation
+
+    fake, _ = setup_managed
+    dep_id, addr, _ = _paid_deposit(client, monkeypatch, fake, "eth-sepolia:native", 5 * 10**17)
+    with dbm.session_scope() as s:
+        (first,) = consolidation.plan(s, "eth-sepolia", force=True)
+        first.status = "confirmed"
+        s.get(DepositAddress, dep_id).swept_at = dbm.utcnow()
+        assert consolidation.plan(s, "eth-sepolia", force=True) == []  # nothing new arrived
+        p = s.query(Payment).filter_by(deposit_id=dep_id).one()
+        s.add(Payment(**{c.name: getattr(p, c.name) for c in Payment.__table__.columns
+                         if c.name not in ("id", "txid", "confirmed_at")},
+                      txid="0xsecond", confirmed_at=dbm.utcnow() + __import__("datetime").timedelta(seconds=5)))
+    with dbm.session_scope() as s:
+        (again,) = consolidation.plan(s, "eth-sepolia", force=True)  # same balance as the first time
+        assert again.idempotency_key == first.idempotency_key + "#2"
+
+
+def test_cancelled_topup_cancels_its_sweep_and_is_not_redone(client, ring, monkeypatch, setup_managed):
+    from cryptus import db as dbm
+    from cryptus.models import Sweep
+    from cryptus.services import consolidation
+    from cryptus.services.audit import Actor
+
+    fake, _ = setup_managed
+    _paid_deposit(client, monkeypatch, fake, f"eth-sepolia:erc20:{TOKEN}", 25_000_000, amount="25")
+    op = Actor("user", "u1", "op")
+    with dbm.session_scope() as s:
+        planned = consolidation.plan(s, "eth-sepolia", force=True)
+        topup = next(p for p in planned if p.kind == "gas_topup")
+        sweep = next(p for p in planned if p.kind == "sweep")
+        for p in planned:
+            consolidation.advance(s, p)
+            consolidation.approve(s, p, op)
+        consolidation.cancel(s, topup, op)
+        consolidation.advance(s, sweep)
+        assert sweep.status == "cancelled"
+    with dbm.session_scope() as s:
+        assert consolidation.plan(s, "eth-sepolia", force=True) == []
+        assert s.query(Sweep).count() == 2 and not fake.sent
+
+
+def test_no_topup_for_a_sweep_that_will_not_be_planned(client, ring, monkeypatch, setup_managed):
+    from cryptus import db as dbm
+    from cryptus.models import Sweep
+    from cryptus.services import consolidation
+
+    fake, _ = setup_managed
+    _, addr, _ = _paid_deposit(client, monkeypatch, fake, f"eth-sepolia:erc20:{TOKEN}", 25_000_000, amount="25")
+    for n in range(consolidation.MAX_REPLANS + 2):
+        fake.balances[(addr.lower(), "eth-sepolia:native")] = n  # every failed attempt leaves a different gas balance
+        with dbm.session_scope() as s:
+            for sw in consolidation.plan(s, "eth-sepolia", force=True):
+                if sw.kind == "sweep":
+                    sw.status, sw.error = "failed", "signer refused"
+                else:
+                    sw.status = "confirmed"
+    with dbm.session_scope() as s:
+        kinds = [k for (k,) in s.query(Sweep.kind).all()]
+        assert kinds.count("sweep") == consolidation.MAX_REPLANS
+        assert kinds.count("gas_topup") == consolidation.MAX_REPLANS  # none funded after the sweep gave up
