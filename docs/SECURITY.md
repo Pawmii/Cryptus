@@ -8,6 +8,7 @@
 | Database tampering | Hash-chained audit log (`cryptus audit-verify`). Sweeps re-read chain state. Secrets at rest are encrypted (Fernet, key derived via HKDF from `CRYPTUS_SECRET_KEY`) |
 | Address substitution | Deterministic derivation from verified public material. Operator verification of address #0. Unique constraints on `(keychain, index)` and `(network, address)` |
 | Fake payments | On-chain re-verification of every payment (receipt status, log contents, canonical block, jetton wallet owner/master) |
+| Spoofed memos (TON direct) | Only plain-text comments that equal an open deposit's memo count, and only if sent after the memo was issued. Fake jettons never reach the merchant's genuine jetton wallet. The value must be credited (no bounce). Shops can pin the constant receiving address |
 | Reorgs / RBF | Configurable confirmations. Re-verification until 3× depth. Orphaned payments revert invoices |
 | Fresh-install takeover | One-time setup token required until an owner exists |
 | Credential stuffing | Argon2id hashing, per-IP and per-account throttling, temporary lockout, single-use TOTP codes. *Settings → Security → Require 2FA* blocks privileged actions for admins/owners until they enrol |
@@ -38,6 +39,8 @@
 * The account lockout (8 failures → 15 min) can be triggered by anyone who knows an operator's email. Restrict
   the console to trusted networks at the proxy if that matters to you.
 * The merchant API has no built-in rate limit. Put one in front of `/api/v1` at the proxy if keys may leak.
+* TON direct mode credits only transfers that carry the invoice's comment. Payments without it reach the
+  merchant's wallet but stay unattributed until the merchant resolves them with the payer.
 * TON native sweeps send the whole wallet balance. The signer's daily limits apply to jetton amounts and
   top-ups, not to that balance, which is still bounded by the allowlisted destination.
 

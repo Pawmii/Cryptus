@@ -6,6 +6,7 @@ import io
 from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 from ..chains.base import ChainError
 from ..core.money import fmt_atomic
 from ..core.networks import NETWORKS
-from ..db import get_db, utcnow
+from ..db import utcnow
 from ..models import (ApiKey, Asset, AuditEntry, DepositAddress, Event, Invoice, Keychain, NetworkWallet, Payment,
                       Sweep, User, UserSession, WebhookDelivery, WebhookEndpoint)
 from ..security import (encrypt_secret, hash_password, new_api_key, new_webhook_secret,
@@ -24,7 +25,7 @@ from ..security import (encrypt_secret, hash_password, new_api_key, new_webhook_
 from ..services import audit, consolidation, infra, invoices as inv_svc, settings as settings_svc, signer_client
 from ..services.webhooks import EVENT_TYPES, UnsafeTarget, check_target, envelope
 from .auth import user_view
-from .deps import Principal, current, require
+from .deps import DB, Principal, current, require
 
 router = APIRouter(prefix="/api/admin", tags=["console"])
 
@@ -40,7 +41,7 @@ def _bad(exc: Exception):
 # ── Dashboard ─────────────────────────────────────────────────────────────
 
 @router.get("/overview")
-def overview(days: int = Query(30, ge=7, le=365), p: Principal = Depends(current), db: Session = Depends(get_db)):
+def overview(days: int = Query(30, ge=7, le=365), p: Principal = Depends(current), db: Session = DB):
     now = utcnow()
     since = now - timedelta(days=days)
     currency = settings_svc.get(db, "invoice")["default_currency"]
@@ -117,7 +118,7 @@ def _inv_row(db: Session, i: Invoice) -> dict:
 @router.get("/invoices")
 def list_invoices(status: str | None = None, q: str | None = None, mode: str | None = None,
                   review: bool = False, limit: int = Query(50, le=200), offset: int = 0,
-                  p: Principal = Depends(current), db: Session = Depends(get_db)):
+                  p: Principal = Depends(current), db: Session = DB):
     stmt = select(Invoice)
     if status:
         stmt = stmt.where(Invoice.status.in_(status.split(",")))
@@ -137,7 +138,7 @@ def list_invoices(status: str | None = None, q: str | None = None, mode: str | N
 
 
 @router.get("/invoices/export.csv")
-def export_invoices(request: Request, p: Principal = Depends(require("operator")), db: Session = Depends(get_db)):
+def export_invoices(request: Request, p: Principal = Depends(require("operator")), db: Session = DB):
     audit.record(db, p.actor(request), "invoices.exported")
 
     def cell(v) -> str:
@@ -177,7 +178,7 @@ def export_invoices(request: Request, p: Principal = Depends(require("operator")
 
 
 @router.get("/invoices/{invoice_id}")
-def get_invoice(invoice_id: str, p: Principal = Depends(current), db: Session = Depends(get_db)):
+def get_invoice(invoice_id: str, p: Principal = Depends(current), db: Session = DB):
     inv = db.get(Invoice, invoice_id) or _404()
     view = inv_svc.merchant_view(db, inv)
     view["events"] = [{"id": e.id, "type": e.type, "created_at": e.created_at.isoformat()} for e in db.execute(
@@ -203,7 +204,7 @@ class InvoiceIn(BaseModel):
 
 @router.post("/invoices")
 def create_invoice(body: InvoiceIn, request: Request, p: Principal = Depends(require("operator")),
-                   db: Session = Depends(get_db)):
+                   db: Session = DB):
     if body.mode not in ("live", "test"):
         _bad(ValueError("mode must be live or test"))
     try:
@@ -219,7 +220,7 @@ def create_invoice(body: InvoiceIn, request: Request, p: Principal = Depends(req
 
 @router.post("/invoices/{invoice_id}/cancel")
 def cancel_invoice(invoice_id: str, request: Request, p: Principal = Depends(require("operator")),
-                   db: Session = Depends(get_db)):
+                   db: Session = DB):
     inv = db.get(Invoice, invoice_id) or _404()
     try:
         inv_svc.cancel(db, inv)
@@ -235,7 +236,7 @@ class ResolveIn(BaseModel):
 
 @router.post("/invoices/{invoice_id}/resolve")
 def resolve_review(invoice_id: str, body: ResolveIn, request: Request, p: Principal = Depends(require("admin")),
-                   db: Session = Depends(get_db)):
+                   db: Session = DB):
     inv = db.get(Invoice, invoice_id) or _404()
     inv.needs_review = False
     audit.record(db, p.actor(request), "invoice.review_resolved", inv.id, note=body.note)
@@ -244,7 +245,7 @@ def resolve_review(invoice_id: str, body: ResolveIn, request: Request, p: Princi
 
 @router.get("/payments")
 def list_payments(network: str | None = None, status: str | None = None, limit: int = Query(50, le=200),
-                  offset: int = 0, p: Principal = Depends(current), db: Session = Depends(get_db)):
+                  offset: int = 0, p: Principal = Depends(current), db: Session = DB):
     stmt = select(Payment)
     if network:
         stmt = stmt.where(Payment.network == network)
@@ -269,7 +270,7 @@ def list_payments(network: str | None = None, status: str | None = None, limit: 
 # ── Networks ──────────────────────────────────────────────────────────────
 
 @router.get("/networks")
-def networks(p: Principal = Depends(current), db: Session = Depends(get_db)):
+def networks(p: Principal = Depends(current), db: Session = DB):
     return infra.network_rows(db)
 
 
@@ -284,7 +285,7 @@ class NetworkIn(BaseModel):
 
 @router.put("/networks/{key}")
 def update_network(key: str, body: NetworkIn, request: Request, p: Principal = Depends(require("admin")),
-                   db: Session = Depends(get_db)):
+                   db: Session = DB):
     if key not in NETWORKS:
         _404()
     try:
@@ -295,7 +296,7 @@ def update_network(key: str, body: NetworkIn, request: Request, p: Principal = D
 
 
 @router.post("/networks/{key}/test")
-def test_network(key: str, p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def test_network(key: str, p: Principal = Depends(require("admin")), db: Session = DB):
     try:
         return infra.test_network(db, key)
     except infra.InfraError as exc:
@@ -305,7 +306,7 @@ def test_network(key: str, p: Principal = Depends(require("admin")), db: Session
 # ── Keychains & wallets ───────────────────────────────────────────────────
 
 @router.get("/keychains")
-def keychains(p: Principal = Depends(current), db: Session = Depends(get_db)):
+def keychains(p: Principal = Depends(current), db: Session = DB):
     out = []
     for kc in db.execute(select(Keychain).order_by(Keychain.created_at)).scalars():
         v = infra.keychain_view(kc)
@@ -320,6 +321,7 @@ def keychains(p: Principal = Depends(current), db: Session = Depends(get_db)):
 class KeychainIn(BaseModel):
     family: str
     scope: str
+    mode: Literal["watch_only", "direct"] = "watch_only"  # managed keychains come only from the signer
     public_material: str = Field(max_length=512)
     label: str = Field("", max_length=120)
     master_fingerprint: str | None = None
@@ -328,9 +330,9 @@ class KeychainIn(BaseModel):
 
 @router.post("/keychains")
 def create_keychain(body: KeychainIn, request: Request, p: Principal = Depends(require("admin")),
-                    db: Session = Depends(get_db)):
+                    db: Session = DB):
     try:
-        kc = infra.create_keychain(db, p.actor(request), mode="watch_only", **body.model_dump())
+        kc = infra.create_keychain(db, p.actor(request), **body.model_dump())
     except infra.InfraError as exc:
         _bad(exc)
     v = infra.keychain_view(kc)
@@ -339,7 +341,7 @@ def create_keychain(body: KeychainIn, request: Request, p: Principal = Depends(r
 
 
 @router.post("/keychains/import-signer")
-def import_signer(request: Request, p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def import_signer(request: Request, p: Principal = Depends(require("admin")), db: Session = DB):
     try:
         created = infra.import_signer_keys(db, p.actor(request))
     except signer_client.SignerError as exc:
@@ -353,7 +355,7 @@ class VerifyIn(BaseModel):
 
 @router.post("/keychains/{kid}/verify")
 def verify_keychain(kid: str, body: VerifyIn, request: Request, p: Principal = Depends(require("admin")),
-                    db: Session = Depends(get_db)):
+                    db: Session = DB):
     kc = db.get(Keychain, kid) or _404()
     try:
         infra.verify_keychain(db, p.actor(request), kc, body.address)
@@ -364,7 +366,7 @@ def verify_keychain(kid: str, body: VerifyIn, request: Request, p: Principal = D
 
 @router.post("/keychains/{kid}/deactivate")
 def deactivate_keychain(kid: str, request: Request, p: Principal = Depends(require("owner")),
-                        db: Session = Depends(get_db)):
+                        db: Session = DB):
     kc = db.get(Keychain, kid) or _404()
     kc.active = False
     audit.record(db, p.actor(request), "keychain.deactivated", kc.id)
@@ -383,7 +385,7 @@ class WalletIn(BaseModel):
 
 @router.put("/wallets/{network}")
 def update_wallet(network: str, body: WalletIn, request: Request, p: Principal = Depends(require("admin")),
-                  db: Session = Depends(get_db)):
+                  db: Session = DB):
     actor = p.actor(request)
     try:
         if body.keychain_id:
@@ -394,6 +396,8 @@ def update_wallet(network: str, body: WalletIn, request: Request, p: Principal =
         if nw is None:
             raise infra.InfraError("attach a keychain first")
         if body.sweep_enabled is not None:
+            if body.sweep_enabled and db.get(Keychain, nw.keychain_id).mode == "direct":
+                raise infra.InfraError("direct receiving pays your wallet itself — there is nothing to consolidate")
             if body.sweep_enabled and not nw.destination_confirmed_at:
                 raise infra.InfraError("set and confirm a consolidation destination before enabling sweeps")
             nw.sweep_enabled = body.sweep_enabled
@@ -417,7 +421,7 @@ def update_wallet(network: str, body: WalletIn, request: Request, p: Principal =
 # ── Assets ────────────────────────────────────────────────────────────────
 
 @router.get("/assets")
-def assets(p: Principal = Depends(current), db: Session = Depends(get_db)):
+def assets(p: Principal = Depends(current), db: Session = DB):
     return [infra.asset_view(a) for a in db.execute(select(Asset).order_by(Asset.network, Asset.kind)).scalars()]
 
 
@@ -431,7 +435,7 @@ class TokenIn(BaseModel):
 
 
 @router.post("/assets")
-def add_asset(body: TokenIn, request: Request, p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def add_asset(body: TokenIn, request: Request, p: Principal = Depends(require("admin")), db: Session = DB):
     try:
         a = infra.add_token(db, p.actor(request), body.network, body.contract, symbol=body.symbol, name=body.name,
                             decimals=body.decimals, coingecko_id=body.coingecko_id)
@@ -449,7 +453,7 @@ class AssetPatch(BaseModel):
 
 @router.patch("/assets/{asset_id:path}")
 def patch_asset(asset_id: str, body: AssetPatch, request: Request, p: Principal = Depends(require("admin")),
-                db: Session = Depends(get_db)):
+                db: Session = DB):
     a = db.get(Asset, asset_id) or _404()
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(a, k, v if v != "" else None)
@@ -460,7 +464,7 @@ def patch_asset(asset_id: str, body: AssetPatch, request: Request, p: Principal 
 # ── Consolidation ─────────────────────────────────────────────────────────
 
 @router.get("/sweeps")
-def sweeps(status: str | None = None, p: Principal = Depends(current), db: Session = Depends(get_db)):
+def sweeps(status: str | None = None, p: Principal = Depends(current), db: Session = DB):
     stmt = select(Sweep)
     if status:
         stmt = stmt.where(Sweep.status.in_(status.split(",")))
@@ -469,7 +473,7 @@ def sweeps(status: str | None = None, p: Principal = Depends(current), db: Sessi
 
 
 @router.post("/sweeps/plan/{network}")
-def plan_sweeps(network: str, request: Request, p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def plan_sweeps(network: str, request: Request, p: Principal = Depends(require("admin")), db: Session = DB):
     try:
         created = consolidation.plan(db, network, force=True)
     except (ChainError, consolidation.SweepError, signer_client.SignerError) as exc:
@@ -481,7 +485,7 @@ def plan_sweeps(network: str, request: Request, p: Principal = Depends(require("
 
 
 @router.post("/sweeps/{sid}/approve")
-def approve_sweep(sid: str, request: Request, p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def approve_sweep(sid: str, request: Request, p: Principal = Depends(require("admin")), db: Session = DB):
     s = db.get(Sweep, sid) or _404()
     try:
         consolidation.approve(db, s, p.actor(request))
@@ -491,7 +495,7 @@ def approve_sweep(sid: str, request: Request, p: Principal = Depends(require("ad
 
 
 @router.post("/sweeps/{sid}/cancel")
-def cancel_sweep(sid: str, request: Request, p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def cancel_sweep(sid: str, request: Request, p: Principal = Depends(require("admin")), db: Session = DB):
     s = db.get(Sweep, sid) or _404()
     try:
         consolidation.cancel(db, s, p.actor(request))
@@ -506,7 +510,7 @@ class SignedIn(BaseModel):
 
 @router.post("/sweeps/{sid}/submit")
 def submit_sweep(sid: str, body: SignedIn, request: Request, p: Principal = Depends(require("admin")),
-                 db: Session = Depends(get_db)):
+                 db: Session = DB):
     s = db.get(Sweep, sid) or _404()
     try:
         consolidation.submit_external(db, s, body.signed, p.actor(request))
@@ -521,7 +525,7 @@ class HaltIn(BaseModel):
 
 
 @router.post("/treasury/halt")
-def treasury_halt(body: HaltIn, request: Request, p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def treasury_halt(body: HaltIn, request: Request, p: Principal = Depends(require("admin")), db: Session = DB):
     if not body.halted and p.user.role != "owner":
         raise HTTPException(403, "only the owner can lift the emergency stop")
     settings_svc.put(db, "treasury", {"sweeps_halted": body.halted})
@@ -549,7 +553,7 @@ def _ep_view(db: Session, ep: WebhookEndpoint) -> dict:
 
 
 @router.get("/webhooks")
-def webhooks(p: Principal = Depends(current), db: Session = Depends(get_db)):
+def webhooks(p: Principal = Depends(current), db: Session = DB):
     return {"items": [_ep_view(db, e) for e in db.execute(select(WebhookEndpoint).order_by(
         WebhookEndpoint.created_at)).scalars()], "event_types": EVENT_TYPES}
 
@@ -564,7 +568,7 @@ class WebhookIn(BaseModel):
 
 @router.post("/webhooks")
 def create_webhook(body: WebhookIn, request: Request, p: Principal = Depends(require("admin")),
-                   db: Session = Depends(get_db)):
+                   db: Session = DB):
     try:
         check_target(body.url)
     except UnsafeTarget as exc:
@@ -582,7 +586,7 @@ def create_webhook(body: WebhookIn, request: Request, p: Principal = Depends(req
 
 @router.put("/webhooks/{wid}")
 def update_webhook(wid: str, body: WebhookIn, request: Request, p: Principal = Depends(require("admin")),
-                   db: Session = Depends(get_db)):
+                   db: Session = DB):
     ep = db.get(WebhookEndpoint, wid) or _404()
     try:
         check_target(body.url)
@@ -594,7 +598,7 @@ def update_webhook(wid: str, body: WebhookIn, request: Request, p: Principal = D
 
 
 @router.post("/webhooks/{wid}/rotate-secret")
-def rotate_webhook(wid: str, request: Request, p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def rotate_webhook(wid: str, request: Request, p: Principal = Depends(require("admin")), db: Session = DB):
     ep = db.get(WebhookEndpoint, wid) or _404()
     secret = new_webhook_secret()
     ep.secret_enc = encrypt_secret(secret)
@@ -603,7 +607,7 @@ def rotate_webhook(wid: str, request: Request, p: Principal = Depends(require("a
 
 
 @router.delete("/webhooks/{wid}")
-def delete_webhook(wid: str, request: Request, p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def delete_webhook(wid: str, request: Request, p: Principal = Depends(require("admin")), db: Session = DB):
     ep = db.get(WebhookEndpoint, wid) or _404()
     db.delete(ep)
     audit.record(db, p.actor(request), "webhook.deleted", wid)
@@ -611,7 +615,7 @@ def delete_webhook(wid: str, request: Request, p: Principal = Depends(require("a
 
 
 @router.post("/webhooks/{wid}/test")
-def test_webhook(wid: str, request: Request, p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def test_webhook(wid: str, request: Request, p: Principal = Depends(require("admin")), db: Session = DB):
     ep = db.get(WebhookEndpoint, wid) or _404()
     ev = Event(type="webhook.test", mode=ep.mode, payload={"message": "Test event from CRYPTUS"})
     db.add(ev)
@@ -627,7 +631,7 @@ def test_webhook(wid: str, request: Request, p: Principal = Depends(require("adm
 
 
 @router.get("/webhooks/{wid}/deliveries")
-def deliveries(wid: str, p: Principal = Depends(current), db: Session = Depends(get_db)):
+def deliveries(wid: str, p: Principal = Depends(current), db: Session = DB):
     rows = db.execute(select(WebhookDelivery).where(WebhookDelivery.endpoint_id == wid)
                       .order_by(WebhookDelivery.created_at.desc()).limit(100)).scalars()
     return [{"id": d.id, "event_type": d.event.type, "event_id": d.event_id, "status": d.status,
@@ -637,7 +641,7 @@ def deliveries(wid: str, p: Principal = Depends(current), db: Session = Depends(
 
 
 @router.post("/webhooks/deliveries/{did}/retry")
-def retry_delivery(did: str, request: Request, p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def retry_delivery(did: str, request: Request, p: Principal = Depends(require("admin")), db: Session = DB):
     d = db.get(WebhookDelivery, did) or _404()
     d.status, d.next_attempt_at = "pending", utcnow()
     audit.record(db, p.actor(request), "webhook.redelivery", did)
@@ -656,7 +660,7 @@ def _key_view(k: ApiKey) -> dict:
 
 
 @router.get("/api-keys")
-def api_keys(p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def api_keys(p: Principal = Depends(require("admin")), db: Session = DB):
     return {"items": [_key_view(k) for k in db.execute(select(ApiKey).order_by(ApiKey.created_at.desc())).scalars()],
             "scopes": API_SCOPES}
 
@@ -669,7 +673,7 @@ class ApiKeyIn(BaseModel):
 
 @router.post("/api-keys")
 def create_api_key(body: ApiKeyIn, request: Request, p: Principal = Depends(require("admin")),
-                   db: Session = Depends(get_db)):
+                   db: Session = DB):
     if body.mode not in ("live", "test") or any(s not in API_SCOPES for s in body.scopes):
         _bad(ValueError("invalid mode or scope"))
     raw, prefix = new_api_key(body.mode)
@@ -682,7 +686,7 @@ def create_api_key(body: ApiKeyIn, request: Request, p: Principal = Depends(requ
 
 
 @router.post("/api-keys/{kid}/revoke")
-def revoke_api_key(kid: str, request: Request, p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def revoke_api_key(kid: str, request: Request, p: Principal = Depends(require("admin")), db: Session = DB):
     k = db.get(ApiKey, kid) or _404()
     k.revoked_at = k.revoked_at or utcnow()
     audit.record(db, p.actor(request), "api_key.revoked", k.id)
@@ -692,7 +696,7 @@ def revoke_api_key(kid: str, request: Request, p: Principal = Depends(require("a
 # ── Team ──────────────────────────────────────────────────────────────────
 
 @router.get("/users")
-def users(p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def users(p: Principal = Depends(require("admin")), db: Session = DB):
     return [user_view(u) for u in db.execute(select(User).order_by(User.created_at)).scalars()]
 
 
@@ -704,7 +708,7 @@ class UserIn(BaseModel):
 
 
 @router.post("/users")
-def create_user(body: UserIn, request: Request, p: Principal = Depends(require("owner")), db: Session = Depends(get_db)):
+def create_user(body: UserIn, request: Request, p: Principal = Depends(require("owner")), db: Session = DB):
     if body.role not in ("admin", "operator", "viewer"):
         _bad(ValueError("role must be admin, operator or viewer"))
     email = body.email.strip().lower()
@@ -729,7 +733,7 @@ class UserPatch(BaseModel):
 
 @router.patch("/users/{uid}")
 def patch_user(uid: str, body: UserPatch, request: Request, p: Principal = Depends(require("owner")),
-               db: Session = Depends(get_db)):
+               db: Session = DB):
     u = db.get(User, uid) or _404()
     if u.id == p.user.id:
         _bad(ValueError("you cannot modify your own role or status"))
@@ -751,7 +755,7 @@ def patch_user(uid: str, body: UserPatch, request: Request, p: Principal = Depen
 
 @router.get("/audit")
 def audit_log(action: str | None = None, limit: int = Query(100, le=500), offset: int = 0,
-              p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+              p: Principal = Depends(require("admin")), db: Session = DB):
     stmt = select(AuditEntry)
     if action:
         stmt = stmt.where(AuditEntry.action.ilike(f"{action}%"))
@@ -763,7 +767,7 @@ def audit_log(action: str | None = None, limit: int = Query(100, le=500), offset
 
 
 @router.get("/audit/verify")
-def audit_verify(p: Principal = Depends(require("admin")), db: Session = Depends(get_db)):
+def audit_verify(p: Principal = Depends(require("admin")), db: Session = DB):
     ok, broken = audit.verify_chain(db)
     return {"ok": ok, "broken_at": broken}
 
@@ -773,7 +777,7 @@ SETTINGS_SECTIONS = {"business": "admin", "invoice": "admin", "compliance": "adm
 
 
 @router.get("/settings")
-def get_settings_(p: Principal = Depends(current), db: Session = Depends(get_db)):
+def get_settings_(p: Principal = Depends(current), db: Session = DB):
     out = {k: settings_svc.get(db, k) for k in SETTINGS_SECTIONS}
     out["rates"] = {k: v for k, v in out["rates"].items() if k != "api_key_enc"} | {
         "has_api_key": bool(out["rates"].get("api_key_enc"))}
@@ -782,7 +786,7 @@ def get_settings_(p: Principal = Depends(current), db: Session = Depends(get_db)
 
 @router.put("/settings/{section}")
 def put_settings(section: str, body: dict, request: Request, p: Principal = Depends(current),
-                 db: Session = Depends(get_db)):
+                 db: Session = DB):
     need = SETTINGS_SECTIONS.get(section) or _404()
     if {"viewer": 0, "operator": 1, "admin": 2, "owner": 3}[p.user.role] < {"admin": 2, "owner": 3}[need]:
         raise HTTPException(403, f"requires {need} role")

@@ -10,6 +10,7 @@ Derivation layout (all paths relative to the account-level public key):
     EVM       BIP44  m/44'/60'/account'     deposits: 0/i          gas station: 1/0
     TON       one ed25519 key, wallet v4r2  deposits: subwallet_id = TON_SUBWALLET_BASE + i
                                             gas wallet: default subwallet 698983191 (+workchain)
+    TON       direct mode                   deposits: the merchant's own wallet + a unique memo per invoice
 """
 from __future__ import annotations
 
@@ -135,6 +136,25 @@ def ton_gas_wallet(pubkey_hex: str, network: NetworkDef) -> Derived:
         f"subwallet:{TON_DEFAULT_SUBWALLET}",
         {"subwallet_id": TON_DEFAULT_SUBWALLET, "raw": addr.to_str(is_user_friendly=False)},
     )
+
+
+def parse_ton_wallet(address: str, network: NetworkDef):
+    """Validate a merchant wallet address for direct receiving (basechain, matching testnet flag)."""
+    try:
+        addr = ton_wallet.parse_address(address)
+    except Exception as exc:
+        raise DerivationError("not a valid TON address") from exc
+    if addr.wc != 0:
+        raise DerivationError("use a basechain (workchain 0) wallet address")
+    if len(address.strip()) == 48 and addr.is_test_only != network.ton_testnet:
+        raise DerivationError("address testnet flag does not match the network")
+    return addr
+
+
+def ton_direct_wallet(address: str, network: NetworkDef) -> Derived:
+    addr = parse_ton_wallet(address, network)
+    return Derived(ton_wallet.friendly(addr, bounceable=False, testnet=network.ton_testnet), "memo",
+                   {"raw": addr.to_str(is_user_friendly=False), "direct": True})
 
 
 # ── Dispatcher ─────────────────────────────────────────────────────────────

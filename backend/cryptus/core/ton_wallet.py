@@ -118,17 +118,37 @@ def parse_jetton_internal_transfer(body: Cell) -> dict | None:
     query_id = s.load_uint(64)
     amount = s.load_coins()
     sender = s.load_address()
-    return {"query_id": query_id, "amount": amount, "from": sender.to_str(is_user_friendly=False) if sender else None}
+    comment = None
+    try:  # response_address, forward_ton_amount, forward_payload:(Either Cell ^Cell)
+        s.load_address()
+        s.load_coins()
+        payload = s.load_ref().begin_parse() if s.load_bit() else s
+        comment = _text_comment(payload)
+    except Exception:
+        pass  # a transfer without (or with a malformed) forward payload simply carries no comment
+    return {"query_id": query_id, "amount": amount, "from": sender.to_str(is_user_friendly=False) if sender else None,
+            "comment": comment}
+
+
+def _text_comment(s) -> str | None:
+    """A TEP-74 text comment: op 0 followed by a snake-encoded string. Encrypted comments are not readable."""
+    if s.remaining_bits < 32 or s.load_uint(32) != 0:
+        return None
+    return s.load_snake_string()
 
 
 def comment_of(body: Cell) -> str | None:
     try:
-        s = body.begin_parse()
-        if s.remaining_bits >= 32 and s.load_uint(32) == 0:
-            return s.load_snake_string()
+        return _text_comment(body.begin_parse())
     except Exception:
         return None
-    return None
+
+
+def normalize_memo(text: str | None) -> str | None:
+    """Comparison form of a payment comment: case and whitespace are ignored, nothing else is."""
+    if not text:
+        return None
+    return "".join(text.split()).upper() or None
 
 
 # ── External message construction (used only by signer / offline tooling) ──

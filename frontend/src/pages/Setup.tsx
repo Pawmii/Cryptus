@@ -247,8 +247,9 @@ function WalletsStep({ onBack, onNext }: { onBack: () => void; onNext: () => voi
 
   return (
     <>
-      <p className="muted">Provide public key material from wallets you control. CRYPTUS derives a fresh deposit
-        address for every invoice and never needs your private keys in watch-only mode.</p>
+      <p className="muted">Connect wallets you control. CRYPTUS never needs your private keys: on TON it can send
+        payments straight to your wallet (matched by a per-invoice comment); elsewhere it derives a fresh deposit address
+        for every invoice from your public key.</p>
       {enabled.length === 0 ? <Alert tone="warning">Enable at least one network first.</Alert> : (
         <>
           <div className="row">
@@ -262,7 +263,7 @@ function WalletsStep({ onBack, onNext }: { onBack: () => void; onNext: () => voi
           {net && (net.wallet ? (
             <Alert tone="success" title={`${net.name} wallet attached`}>{net.wallet.keychain?.label} · {net.wallet.keychain?.mode.replace("_", "-")}</Alert>
           ) : (
-            <Panel title={`${net.name} — watch-only keychain`}><KeychainSetup net={net} onDone={() => nets.reload()} /></Panel>
+            <Panel title={`${net.name} — receiving wallet`}><KeychainSetup net={net} onDone={() => nets.reload()} /></Panel>
           ))}
         </>
       )}

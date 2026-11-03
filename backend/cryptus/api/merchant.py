@@ -10,11 +10,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..db import get_db
 from ..models import Invoice
 from ..services import audit, invoices as inv_svc
 from ..services.infra import asset_view
-from .deps import ApiPrincipal, scope
+from .deps import DB, ApiPrincipal, scope
 
 router = APIRouter(prefix="/api/v1", tags=["merchant"])
 
@@ -43,14 +42,14 @@ def _own(db: Session, p: ApiPrincipal, invoice_id: str) -> Invoice:
 
 
 @router.get("/assets")
-def list_assets(p: ApiPrincipal = Depends(scope("invoices:read")), db: Session = Depends(get_db)):
+def list_assets(p: ApiPrincipal = Depends(scope("invoices:read")), db: Session = DB):
     """Assets that can currently be used for payment in this key's mode."""
     return {"data": [asset_view(a) for a in inv_svc.available_assets(db, p.key.mode)]}
 
 
 @router.post("/invoices", status_code=201)
 def create(body: CreateInvoice, request: Request, idempotency_key: str | None = Header(None, max_length=128),
-           p: ApiPrincipal = Depends(scope("invoices:write")), db: Session = Depends(get_db)):
+           p: ApiPrincipal = Depends(scope("invoices:write")), db: Session = DB):
     if body.metadata and len(str(body.metadata)) > 4000:
         raise HTTPException(400, {"code": "invalid_request", "message": "metadata too large"})
     if body.redirect_url and not body.redirect_url.startswith(("https://", "http://")):
@@ -67,7 +66,7 @@ def create(body: CreateInvoice, request: Request, idempotency_key: str | None = 
 
 @router.get("/invoices")
 def list_(status: str | None = None, order_id: str | None = None, limit: int = Query(25, le=100),
-          offset: int = 0, p: ApiPrincipal = Depends(scope("invoices:read")), db: Session = Depends(get_db)):
+          offset: int = 0, p: ApiPrincipal = Depends(scope("invoices:read")), db: Session = DB):
     stmt = select(Invoice).where(Invoice.mode == p.key.mode)
     if status:
         stmt = stmt.where(Invoice.status.in_(status.split(",")))
@@ -79,13 +78,13 @@ def list_(status: str | None = None, order_id: str | None = None, limit: int = Q
 
 
 @router.get("/invoices/{invoice_id}")
-def get(invoice_id: str, p: ApiPrincipal = Depends(scope("invoices:read")), db: Session = Depends(get_db)):
+def get(invoice_id: str, p: ApiPrincipal = Depends(scope("invoices:read")), db: Session = DB):
     return inv_svc.merchant_view(db, _own(db, p, invoice_id))
 
 
 @router.post("/invoices/{invoice_id}/cancel")
 def cancel(invoice_id: str, request: Request, p: ApiPrincipal = Depends(scope("invoices:write")),
-           db: Session = Depends(get_db)):
+           db: Session = DB):
     inv = _own(db, p, invoice_id)
     try:
         inv_svc.cancel(db, inv)

@@ -36,13 +36,18 @@ Response (abridged):
   "price": {"amount": "25.00", "currency": "USD"},
   "payment": {
     "asset": "ton:jetton:0:b113a994…", "symbol": "USDT", "network": "ton",
-    "address": "UQB…", "amount_due": "25", "amount_due_atomic": "25000000",
+    "address": "UQB…", "memo": null, "amount_due": "25", "amount_due_atomic": "25000000",
     "confirmations_required": 1, "payment_uri": "ton://transfer/UQB…?jetton=EQCx…&amount=25000000"
   },
   "checkout_url": "https://pay.example.com/pay/6f0c…",
   "expires_at": "2026-11-02T21:30:00+00:00"
 }
 ```
+
+`payment.memo` is non-null when the TON wallet is in **direct** mode. Every invoice then pays the merchant's
+own wallet, and the payer **must** include this comment (`payment_uri` already carries it as `&text=`). If you
+render your own checkout, show it next to the address. Because the address is constant in this mode, your
+backend can pin it and refuse invoices that show any other address.
 
 Other endpoints: `GET /invoices/{id}`, `GET /invoices?status=paid&order_id=…`, `POST /invoices/{id}/cancel`,
 `GET /assets` (assets operational for your key's mode).

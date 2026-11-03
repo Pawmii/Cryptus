@@ -7,12 +7,13 @@ wallet software*. This proves the gateway derives addresses that the merchant ca
 
 ## Operating modes
 
-| | Watch-only | Managed signing |
-|---|---|---|
-| Who holds private keys | You (hardware wallet, offline machine) | `cryptus-signer`, on a separate host/container |
-| Gateway holds | xpub / public key only | xpub / public key only |
-| Consolidation | Gateway prepares an unsigned PSBT or tx. You sign it externally and paste it back | Signer validates the request against its **own** policy and signs |
-| Failure mode if the web tier is compromised | Attacker sees balances and addresses; cannot move funds | Attacker can only *ask* the signer; destinations, fees, amounts and rates are capped by signer policy |
+| | Watch-only | Managed signing | Direct (TON) |
+|---|---|---|---|
+| Who holds private keys | You (hardware wallet, offline machine) | `cryptus-signer`, on a separate host/container | You (your normal wallet app) |
+| Gateway holds | xpub / public key only | xpub / public key only | Your wallet **address** only |
+| Where payments land | Per-invoice deposit addresses | Per-invoice deposit addresses | **Your wallet itself** |
+| Consolidation | Gateway prepares an unsigned PSBT or tx. You sign it externally and paste it back | Signer validates the request against its **own** policy and signs | Not needed |
+| Failure mode if the web tier is compromised | Attacker sees balances and addresses; cannot move funds | Attacker can only *ask* the signer; destinations, fees, amounts and rates are capped by signer policy | Attacker cannot move funds; could only point *new* invoices elsewhere (pin the address in your shop, see [PRODUCTION](PRODUCTION.md)) |
 
 ## Derivation per chain
 
@@ -81,6 +82,23 @@ A mismatch marks the payment `rejected`. Unverified jetton wallets are never swe
 transfer message. CRYPTUS tops up from the gas wallet (your default v4r2 wallet for the same key, the one
 Tonkeeper shows), then sends `transfer` (op `0x0f8a7ea5`) with `destination` and `response_destination`
 set to your primary wallet. Excess GRAM is returned there.
+
+**Direct receiving (one wallet, a comment per invoice).** Instead of a key, register the address of the
+wallet you want paid. Checkout shows that address (non-bounceable form) and a unique comment, by default the
+invoice number (`CR-2026-000123`, later quotes `CR-2026-000123-2`). The `ton://` link carries it as
+`text=` so wallets pre-fill it. Detection follows the wallet, and its USDT jetton wallet, in logical-time
+order from a persisted cursor, so a busy wallet never loses transactions between passes. A transfer
+credits a deposit only if:
+
+* it is a plain text comment (op `0`) equal to the deposit's memo, ignoring case and whitespace,
+* it was sent no earlier than the memo was issued (120 s clock tolerance), so a memo cannot be pre-paid,
+* the value stayed with the account (native: credit phase, no bounce; jettons: the same `internal_transfer`
+  and owner/master checks as above, the comment taken from `forward_payload`).
+
+Encrypted comments, transfers without a comment and unknown comments are ignored: the funds are in the
+merchant's wallet, but they are not attributed to an invoice. Before a direct wallet is accepted, CRYPTUS
+runs its `seqno` get-method, which a pasted contract address (for example a jetton wallet) does not have.
+Consolidation and the gas wallet are disabled for direct wallets.
 
 **Recovering TON funds without CRYPTUS.** You need the key and the subwallet id (`0x40000000 + index`,
 shown on each invoice's *Quotes & derivation* panel). `cryptus-signer offline sign-ton` builds the

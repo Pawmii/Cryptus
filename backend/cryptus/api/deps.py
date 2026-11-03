@@ -14,6 +14,10 @@ from ..models import ApiKey, User, UserSession
 from ..security import constant_eq, token_digest
 from ..services.audit import Actor
 
+# The request's database session. scope="function" commits *before* the response is sent: a client never
+# receives a success whose transaction then fails, and its next request always sees what this one wrote.
+DB = Depends(get_db, scope="function")
+
 SESSION_COOKIE = "cryptus_session"
 CSRF_HEADER = "X-CSRF-Token"
 ROLES = {"viewer": 0, "operator": 1, "admin": 2, "owner": 3}
@@ -79,16 +83,16 @@ def _session(request: Request, db: Session, allow_mfa_pending: bool = False) -> 
     return Principal(s.user, s)
 
 
-def current(request: Request, db: Session = Depends(get_db)) -> Principal:
+def current(request: Request, db: Session = DB) -> Principal:
     return _session(request, db)
 
 
-def current_mfa_pending(request: Request, db: Session = Depends(get_db)) -> Principal:
+def current_mfa_pending(request: Request, db: Session = DB) -> Principal:
     return _session(request, db, allow_mfa_pending=True)
 
 
 def require(role: str):
-    def dep(p: Principal = Depends(current), db: Session = Depends(get_db)) -> Principal:
+    def dep(p: Principal = Depends(current), db: Session = DB) -> Principal:
         if ROLES.get(p.user.role, -1) < ROLES[role]:
             raise HTTPException(403, f"requires {role} role")
         if p.user.role in ("admin", "owner") and not p.user.totp_enabled:
@@ -107,7 +111,7 @@ class ApiPrincipal:
         return Actor("api", self.key.id, self.key.name, client_ip(request))
 
 
-def api_key(request: Request, authorization: str | None = Header(None), db: Session = Depends(get_db)) -> ApiPrincipal:
+def api_key(request: Request, authorization: str | None = Header(None), db: Session = DB) -> ApiPrincipal:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "missing bearer API key", headers={"WWW-Authenticate": "Bearer"})
     raw = authorization[7:].strip()

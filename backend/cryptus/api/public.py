@@ -5,13 +5,13 @@ unguessable invoice id in the URL.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from ..db import get_db
 from ..models import Invoice
 from ..services import invoices as inv_svc
+from .deps import DB
 
 router = APIRouter(prefix="/api/public", tags=["checkout"])
 
@@ -24,7 +24,7 @@ def _inv(db: Session, invoice_id: str) -> Invoice:
 
 
 @router.get("/invoices/{invoice_id}")
-def get_invoice(invoice_id: str, db: Session = Depends(get_db)):
+def get_invoice(invoice_id: str, db: Session = DB):
     return inv_svc.public_view(db, _inv(db, invoice_id))
 
 
@@ -33,7 +33,7 @@ class SelectIn(BaseModel):
 
 
 @router.post("/invoices/{invoice_id}/select")
-def select_asset(invoice_id: str, body: SelectIn, db: Session = Depends(get_db)):
+def select_asset(invoice_id: str, body: SelectIn, db: Session = DB):
     inv = _inv(db, invoice_id)
     try:
         inv_svc.quote(db, inv, body.asset)

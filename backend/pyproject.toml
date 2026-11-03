@@ -9,7 +9,7 @@ description = "CRYPTUS — self-hosted, non-custodial cryptocurrency payment gat
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }
 dependencies = [
-  "fastapi>=0.115",
+  "fastapi>=0.121",  # Depends(scope="function"): commit before the response is sent
   "uvicorn[standard]>=0.30",
   "sqlalchemy>=2.0",
   "alembic>=1.13",

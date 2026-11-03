@@ -95,7 +95,7 @@ def _eligible_deposits(db: Session, network: str) -> list[DepositAddress]:
     q = (select(DepositAddress, Invoice, last_paid.c.at)
          .join(Invoice, Invoice.id == DepositAddress.invoice_id)
          .join(last_paid, last_paid.c.deposit_id == DepositAddress.id)
-         .where(DepositAddress.network == network))
+         .where(DepositAddress.network == network, DepositAddress.memo == ""))  # memo deposits = merchant's wallet
     out = []
     for d, inv, paid_at in db.execute(q).all():
         if d.id in busy or (d.swept_at and paid_at and paid_at <= d.swept_at):
@@ -149,6 +149,8 @@ def plan(db: Session, network: str, *, force: bool = False) -> list[Sweep]:
     if not force and nw.last_sweep_run_at and utcnow() - nw.last_sweep_run_at < timedelta(minutes=nw.sweep_interval_minutes):
         return []
     kc = db.get(Keychain, nw.keychain_id)
+    if kc.mode == "direct":
+        return []  # payments already land in the merchant's own wallet
     ok, why = destination_ok(db, nw, kc)
     if not ok:
         log.info("%s: sweep skipped — %s", network, why)

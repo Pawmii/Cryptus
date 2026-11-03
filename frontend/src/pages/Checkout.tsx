@@ -173,16 +173,29 @@ export function Checkout() {
                       {p.asset_kind === "jetton" ? <>USDT Jetton, master <span className="mono">{shortHash(p.contract, 6, 6)}</span>. </> :
                         p.asset_kind === "erc20" ? <>Token contract <span className="mono">{shortHash(p.contract, 6, 4)}</span>. </> : null}
                       Assets sent on another network or as another token may be lost.
-                      {p.network.startsWith("ton") && " No memo or comment is needed — this address is unique to this invoice."}
+                      {p.network.startsWith("ton") && !p.memo && " No memo or comment is needed — this address is unique to this invoice."}
                     </Alert>
+                    {p.memo && (
+                      <Alert tone="danger" title="Add the comment below to your transfer">
+                        This address belongs to {inv.merchant.name}; the comment is how your payment is matched to this invoice.
+                        Payments without it, or with an encrypted comment, are not credited automatically.
+                      </Alert>
+                    )}
                     <div className="row" style={{ alignItems: "flex-start", gap: "var(--s-5)" }}>
                       <div className="qr-plate" dangerouslySetInnerHTML={{ __html: p.qr_svg }} role="img" aria-label="Payment QR code" />
                       <div className="grow stack" style={{ minWidth: 220 }}>
                         <div className="stack--sm">
-                          <span className="label">Deposit address</span>
+                          <span className="label">{p.memo ? "Address" : "Deposit address"}</span>
                           <CopyField value={p.address} label="address" />
                         </div>
+                        {p.memo && (
+                          <div className="stack--sm">
+                            <span className="label">Comment (required)</span>
+                            <CopyField value={p.memo} label="comment" />
+                          </div>
+                        )}
                         {p.payment_uri && <a className="btn btn--secondary btn--sm" href={p.payment_uri}><Icon name="external" size={14} />Open in wallet</a>}
+                        {p.memo && <span className="xs muted">The QR code and button fill in the comment for you.</span>}
                       </div>
                     </div>
                     {seen.length > 0 ? (

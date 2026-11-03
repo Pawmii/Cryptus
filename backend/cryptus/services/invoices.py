@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from ..chains.base import AssetInfo, ChainError, WatchItem
 from ..chains.registry import adapter_for
-from ..core.derivation import derive_deposit, normalize_address
+from ..core.derivation import derive_deposit, normalize_address, ton_direct_wallet
 from ..core.money import AmountError, fmt_atomic, to_atomic
 from ..core.networks import NETWORKS, get_network
 from ..db import utcnow
@@ -198,6 +198,9 @@ def allocate_address(db: Session, network_key: str) -> tuple[Keychain, int, str,
     # Atomic counter bump — safe under concurrency on PostgreSQL and SQLite.
     idx = db.execute(update(Keychain).where(Keychain.id == kc.id).values(next_index=Keychain.next_index + 1)
                      .returning(Keychain.next_index)).scalar_one() - 1
+    if kc.mode == "direct":
+        d = ton_direct_wallet(kc.public_material, net)
+        return kc, idx, d.path, d.address, {"direct": True}
     d = derive_deposit(net, kc.public_material, idx)
     return kc, idx, d.path, d.address, d.meta
 
@@ -227,9 +230,12 @@ def quote(db: Session, inv: Invoice, asset_id: str) -> DepositAddress:
     kc, idx, path, display, meta = allocate_address(db, asset.network)
     net = get_network(asset.network)
     late = int(settings_svc.get(db, "invoice")["late_payment_window_minutes"])
+    # Direct mode: every invoice pays the same wallet, so the comment is what identifies the deposit. The
+    # invoice number is unique and recognisable in the merchant's own wallet history; later quotes get a suffix.
+    memo = "" if kc.mode != "direct" else (inv.number if not inv.deposits else f"{inv.number}-{len(inv.deposits) + 1}")
     dep = DepositAddress(keychain_id=kc.id, derivation_index=idx, derivation_path=path, network=asset.network,
                          asset_id=asset.id, address=normalize_address(net.family, display), display_address=display,
-                         invoice_id=inv.id, amount_due=str(due), rate=rate, rate_source=source,
+                         memo=memo, invoice_id=inv.id, amount_due=str(due), rate=rate, rate_source=source,
                          meta={**meta, "created_ts": int(utcnow().timestamp())},
                          monitor_until=inv.expires_at + timedelta(minutes=late))
     db.add(dep)
@@ -353,7 +359,7 @@ def _deposit_view(db: Session, d: DepositAddress, t: dict | None) -> dict:
         "id": d.id, "asset": d.asset_id, "symbol": a.symbol, "asset_name": a.name, "asset_kind": a.kind,
         "contract": a.contract, "decimals": a.decimals,
         "network": d.network, "network_name": net.name, "environment": net.environment,
-        "address": d.display_address,
+        "address": d.display_address, "memo": d.memo or None,
         "amount_due": fmt_atomic(d.amount_due, a.decimals), "amount_due_atomic": d.amount_due,
         "amount_seen": fmt_atomic(tt["seen"], a.decimals), "amount_confirmed": fmt_atomic(tt["confirmed"], a.decimals),
         "rate": d.rate, "rate_source": d.rate_source,
@@ -369,11 +375,13 @@ def payment_uri(d: DepositAddress, a: Asset) -> str | None:
     if net.family == "bitcoin":
         return f"bitcoin:{d.display_address}?amount={amt}"
     if net.family == "ton":
+        from urllib.parse import quote as q
+        text = f"&text={q(d.memo)}" if d.memo else ""  # wallets pre-fill the comment from this
         if a.kind == "native":
-            return f"ton://transfer/{d.display_address}?amount={d.amount_due}"
+            return f"ton://transfer/{d.display_address}?amount={d.amount_due}{text}"
         from ..core.ton_wallet import friendly, parse_address
         jetton = friendly(parse_address(a.contract), bounceable=True, testnet=net.ton_testnet)
-        return f"ton://transfer/{d.display_address}?jetton={jetton}&amount={d.amount_due}"
+        return f"ton://transfer/{d.display_address}?jetton={jetton}&amount={d.amount_due}{text}"
     if net.family == "evm":
         if a.kind == "native":
             return f"ethereum:{d.display_address}@{net.chain_id}?value={d.amount_due}"

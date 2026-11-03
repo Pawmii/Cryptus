@@ -1,6 +1,6 @@
 export interface Quote {
   id: string; asset: string; symbol: string; asset_name: string; asset_kind: string; contract: string | null;
-  decimals: number; network: string; network_name: string; environment: string; address: string;
+  decimals: number; network: string; network_name: string; environment: string; address: string; memo: string | null;
   amount_due: string; amount_due_atomic: string; amount_seen: string; amount_confirmed: string;
   rate: string | null; rate_source: string | null; confirmations_required: number;
   payment_uri: string | null; explorer_url: string | null; qr_svg?: string;
@@ -31,7 +31,7 @@ export interface InvoiceFull {
 }
 
 export interface Keychain {
-  id: string; family: string; scope: string; label: string; mode: "watch_only" | "managed"; public_material: string;
+  id: string; family: string; scope: string; label: string; mode: "watch_only" | "managed" | "direct"; public_material: string;
   public_material_short: string; master_fingerprint: string | null; account_path: string | null; next_index: number;
   active: boolean; verified_at: string | null; created_at: string;
   preview?: { index: number; path: string; address: string }[]; networks?: string[];
@@ -41,7 +41,7 @@ export interface WalletInfo {
   network: string; keychain_id: string; keychain: Keychain | null; destination: string | null;
   destination_confirmed_at: string | null; sweep_enabled: boolean; sweep_interval_minutes: number;
   sweep_thresholds: Record<string, string>; max_fee: Record<string, string>; gas_address: string | null;
-  last_sweep_run_at: string | null;
+  receiving_address: string | null; last_sweep_run_at: string | null;
 }
 
 export interface NetworkRow {

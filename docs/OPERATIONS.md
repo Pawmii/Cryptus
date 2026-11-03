@@ -33,6 +33,13 @@ Testnets: `btc-testnet` (testnet4/signet via Esplora), `eth-sepolia`, `bsc-testn
 `arbitrum-sepolia`, `base-sepolia`, `ton-testnet`. Test-mode API keys can only use these. Testnet coins are priced with their mainnet
 counterpart's rate, so fiat-priced integration tests (`"currency": "USD"`) work in test mode.
 
+## TON direct receiving
+
+*Wallets → TON → Straight to my wallet* registers your own wallet address. No signer, gas wallet or
+consolidation is involved. See [PRODUCTION](PRODUCTION.md) for the full walkthrough and its limits.
+Detection keeps a per-account logical-time cursor in the network's scan state. Changing the endpoint resets
+it, and the next pass re-reads from the oldest watched invoice.
+
 ## Managed signing setup
 
 ```bash
@@ -48,6 +55,9 @@ the policy allowlist. For maximum isolation, run the signer on a different host 
 `signing` network over WireGuard.
 
 ## Backups
+
+`deploy/backup.sh` writes a `pg_dump` plus an archive of `deploy/.env` and `deploy/secrets/` to
+`/var/backups/cryptus` and keeps 14 days. Run it from cron and copy the directory off the server.
 
 | What | How | Why |
 |---|---|---|

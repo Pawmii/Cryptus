@@ -9,12 +9,12 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..db import get_db, utcnow
+from ..db import utcnow
 from ..models import LoginAttempt, User, UserSession
 from ..security import (decrypt_secret, encrypt_secret, hash_password, needs_rehash, new_session_token,
                         new_totp_secret, password_problems, token_digest, totp_step, totp_uri, verify_password)
 from ..services import audit, settings as settings_svc
-from .deps import SESSION_COOKIE, Principal, client_ip, current, current_mfa_pending
+from .deps import DB, SESSION_COOKIE, Principal, client_ip, current, current_mfa_pending
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -80,7 +80,7 @@ def start_session(db: Session, response: Response, request: Request, user: User,
 
 
 @router.post("/login")
-def login(body: LoginIn, request: Request, response: Response, db: Session = Depends(get_db)):
+def login(body: LoginIn, request: Request, response: Response, db: Session = DB):
     ip = client_ip(request)
     email = body.email.strip().lower()
     _throttle(db, f"ip:{ip}", f"acct:{email}")
@@ -111,7 +111,7 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
 
 
 @router.post("/mfa")
-def mfa(body: CodeIn, request: Request, p: Principal = Depends(current_mfa_pending), db: Session = Depends(get_db)):
+def mfa(body: CodeIn, request: Request, p: Principal = Depends(current_mfa_pending), db: Session = DB):
     if not p.session.mfa_pending:
         return {"ok": True, "user": user_view(p.user), "csrf_token": p.session.csrf_token}
     ip = client_ip(request)
@@ -129,14 +129,14 @@ def mfa(body: CodeIn, request: Request, p: Principal = Depends(current_mfa_pendi
 
 
 @router.post("/logout")
-def logout(response: Response, p: Principal = Depends(current), db: Session = Depends(get_db)):
+def logout(response: Response, p: Principal = Depends(current), db: Session = DB):
     db.delete(p.session)
     response.delete_cookie(SESSION_COOKIE, path="/")
     return {"ok": True}
 
 
 @router.get("/me")
-def me(p: Principal = Depends(current), db: Session = Depends(get_db)):
+def me(p: Principal = Depends(current), db: Session = DB):
     sec = settings_svc.get(db, "security")
     return {"user": user_view(p.user), "csrf_token": p.session.csrf_token,
             "mfa_enforced": bool(sec.get("require_mfa_for_admins")) and p.user.role in ("admin", "owner")
@@ -145,7 +145,7 @@ def me(p: Principal = Depends(current), db: Session = Depends(get_db)):
 
 @router.post("/password")
 def change_password(body: PasswordChangeIn, request: Request, p: Principal = Depends(current),
-                    db: Session = Depends(get_db)):
+                    db: Session = DB):
     if not verify_password(p.user.password_hash, body.current_password):
         raise HTTPException(400, "current password is incorrect")
     if probs := password_problems(body.new_password):
@@ -157,7 +157,7 @@ def change_password(body: PasswordChangeIn, request: Request, p: Principal = Dep
 
 
 @router.post("/totp/begin")
-def totp_begin(p: Principal = Depends(current), db: Session = Depends(get_db)):
+def totp_begin(p: Principal = Depends(current), db: Session = DB):
     if p.user.totp_enabled:
         raise HTTPException(400, "two-factor authentication is already enabled")
     secret = new_totp_secret()
@@ -169,7 +169,7 @@ def totp_begin(p: Principal = Depends(current), db: Session = Depends(get_db)):
 
 
 @router.post("/totp/confirm")
-def totp_confirm(body: CodeIn, request: Request, p: Principal = Depends(current), db: Session = Depends(get_db)):
+def totp_confirm(body: CodeIn, request: Request, p: Principal = Depends(current), db: Session = DB):
     secret = decrypt_secret(p.user.totp_secret_enc)
     if not secret or not _use_totp(db, p.user, secret, body.code):
         raise HTTPException(400, "invalid code")
@@ -179,7 +179,7 @@ def totp_confirm(body: CodeIn, request: Request, p: Principal = Depends(current)
 
 
 @router.post("/totp/disable")
-def totp_disable(body: CodeIn, request: Request, p: Principal = Depends(current), db: Session = Depends(get_db)):
+def totp_disable(body: CodeIn, request: Request, p: Principal = Depends(current), db: Session = DB):
     secret = decrypt_secret(p.user.totp_secret_enc)
     if not p.user.totp_enabled or not secret or not _use_totp(db, p.user, secret, body.code):
         raise HTTPException(400, "invalid code")
@@ -189,7 +189,7 @@ def totp_disable(body: CodeIn, request: Request, p: Principal = Depends(current)
 
 
 @router.get("/sessions")
-def sessions(p: Principal = Depends(current), db: Session = Depends(get_db)):
+def sessions(p: Principal = Depends(current), db: Session = DB):
     rows = db.execute(select(UserSession).where(UserSession.user_id == p.user.id, UserSession.expires_at > utcnow())
                       .order_by(UserSession.last_seen_at.desc())).scalars()
     return [{"id": s.id[:12], "current": s.id == p.session.id, "ip": s.ip, "user_agent": s.user_agent,
@@ -197,7 +197,7 @@ def sessions(p: Principal = Depends(current), db: Session = Depends(get_db)):
 
 
 @router.post("/sessions/revoke-others")
-def revoke_others(request: Request, p: Principal = Depends(current), db: Session = Depends(get_db)):
+def revoke_others(request: Request, p: Principal = Depends(current), db: Session = DB):
     db.execute(delete(UserSession).where(UserSession.user_id == p.user.id, UserSession.id != p.session.id))
     audit.record(db, p.actor(request), "auth.sessions_revoked", p.user.id)
     return {"ok": True}

@@ -42,6 +42,8 @@ def _own_senders(db: Session, network_key: str) -> set[str]:
         return set()
     kc = db.get(Keychain, nw.keychain_id)
     net = NETWORKS[network_key]
+    if kc.mode == "direct":
+        return set()  # no gas wallet: deposits are the merchant's own wallet
     try:
         if net.family == "evm":
             return {evm_gas_station(kc.public_material).address.lower()}
@@ -60,7 +62,8 @@ def watch_items(db: Session, network_key: str) -> list[WatchItem]:
     items = []
     for d in deps:
         a = db.get(Asset, d.asset_id)
-        items.append(WatchItem(d.id, d.address, d.display_address, asset_info(a), d.meta or {}, own))
+        meta = {**(d.meta or {}), "memo": d.memo} if d.memo else (d.meta or {})
+        items.append(WatchItem(d.id, d.address, d.display_address, asset_info(a), meta, own))
     return items
 
 

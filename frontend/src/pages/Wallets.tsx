@@ -36,6 +36,7 @@ export function Wallets() {
         <Button size="sm" icon="signer" onClick={importSigner}>Import signer keys</Button>}>
         Deposit addresses derive from public keys you control. <strong>Watch-only</strong> keychains never sign — consolidation is
         exported for your hardware or offline wallet. <strong>Managed</strong> keychains belong to the isolated signer, which enforces its own policy.
+        On TON, <strong>direct</strong> mode sends every payment straight to your own wallet, matched by a per-invoice comment.
       </PageHead>
 
       {relevant.length === 0 && <Alert tone="info">Configure a network first; wallets attach per network.</Alert>}
@@ -45,7 +46,7 @@ export function Wallets() {
             actions={<>
               {n.wallet ? <Status value={n.wallet.keychain?.verified_at ? "active" : "pending"} /> : <Status value="not_configured" />}
               {can("admin") && (n.wallet
-                ? <Button size="sm" variant="ghost" onClick={() => setConfig(n)}>Consolidation</Button>
+                ? n.wallet.keychain?.mode !== "direct" && <Button size="sm" variant="ghost" onClick={() => setConfig(n)}>Consolidation</Button>
                 : <Button size="sm" variant="primary" icon="plus" onClick={() => setSetup(n)}>Attach wallet</Button>)}
             </>}>
             {n.wallet?.keychain ? <WalletSummary w={n.wallet} /> : <AttachExisting net={n} keychains={kcs.data!.items} onDone={reload} />}
@@ -60,7 +61,7 @@ export function Wallets() {
             <tr key={k.id}>
               <td>{k.label}{!k.active && <span className="tag" style={{ marginLeft: 6 }}>inactive</span>}</td>
               <td className="small">{k.family} · {k.scope}</td>
-              <td><span className="tag">{k.mode === "managed" ? "managed" : "watch-only"}</span></td>
+              <td><span className="tag">{modeLabel(k.mode)}</span></td>
               <td className="mono xs" title={k.public_material}>{k.public_material_short}</td>
               <td className="r num">{k.next_index}</td>
               <td className="small">{k.verified_at ? dateTime(k.verified_at) : <span style={{ color: "var(--warning)" }}>unverified</span>}</td>
@@ -79,12 +80,30 @@ export function Wallets() {
   );
 }
 
+const modeLabel = (m: Keychain["mode"]) => (m === "managed" ? "managed" : m === "direct" ? "direct" : "watch-only");
+
 function WalletSummary({ w }: { w: WalletInfo }) {
   const k = w.keychain!;
+  if (k.mode === "direct") {
+    return (
+      <div className="grid-2">
+        <Kv items={[
+          ["Receiving wallet", <span className="mono xs break">{w.receiving_address}</span>],
+          ["Mode", <><span className="tag">direct</span> <span className="small muted">unique comment per invoice</span></>],
+          ["Invoices issued", <span className="num">{k.next_index}</span>],
+        ]} />
+        <Kv items={[
+          ["Label", k.label],
+          ["Consolidation", <span className="muted">not needed — payments arrive in your wallet</span>],
+          ["Keys on this server", <span className="muted">none</span>],
+        ]} />
+      </div>
+    );
+  }
   return (
     <div className="grid-2">
       <Kv items={[
-        ["Keychain", <>{k.label} <span className="tag">{k.mode === "managed" ? "managed" : "watch-only"}</span></>],
+        ["Keychain", <>{k.label} <span className="tag">{modeLabel(k.mode)}</span></>],
         ["Public material", <span className="mono xs break">{shortHash(k.public_material, 16, 10)}</span>],
         ...(k.master_fingerprint ? [["Fingerprint · path", <span className="mono xs">{k.master_fingerprint} · {k.account_path}</span>] as [string, JSX.Element]] : []),
         ["Addresses issued", <span className="num">{k.next_index}</span>],
@@ -109,7 +128,7 @@ function AttachExisting({ net, keychains, onDone }: { net: NetworkRow; keychains
       <div className="grow" style={{ maxWidth: 360 }}>
         <Select label="Use an existing keychain" value={sel} onChange={(e) => setSel(e.target.value)}>
           <option value="">Select…</option>
-          {options.map((k) => <option key={k.id} value={k.id}>{k.label} ({k.mode === "managed" ? "managed" : "watch-only"})</option>)}
+          {options.map((k) => <option key={k.id} value={k.id}>{k.label} ({modeLabel(k.mode)})</option>)}
         </Select>
       </div>
       <Button disabled={!sel} onClick={async () => {

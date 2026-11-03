@@ -85,7 +85,8 @@ export function InvoiceDetail() {
                   <span className="stat__value" style={{ fontSize: "var(--text-xl)", color: Number(p.amount_confirmed) > 0 ? "var(--success)" : undefined }}>
                     {p.amount_confirmed} <small>{p.symbol}</small></span></div>
               </div>
-              <div className="stack--sm"><span className="label">Deposit address</span><CopyField value={p.address} /></div>
+              <div className="stack--sm"><span className="label">{p.memo ? "Merchant wallet" : "Deposit address"}</span><CopyField value={p.address} /></div>
+              {p.memo && <div className="stack--sm"><span className="label">Payment comment (memo)</span><CopyField value={p.memo} /></div>}
               <Kv items={[
                 ["Asset id", <span className="mono xs break">{p.asset}</span>],
                 ["Seen (incl. unconfirmed)", <span className="num">{p.amount_seen} {p.symbol}</span>],

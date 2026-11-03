@@ -105,8 +105,8 @@ class Keychain(Base):
     family: Mapped[str] = mapped_column(String(16))
     scope: Mapped[str] = mapped_column(String(32))  # bitcoin: network key; evm: "evm"; ton: network key
     label: Mapped[str] = mapped_column(String(120))
-    public_material: Mapped[str] = mapped_column(Text)  # xpub / zpub / ed25519 pubkey hex
-    mode: Mapped[str] = mapped_column(String(16))  # watch_only | managed
+    public_material: Mapped[str] = mapped_column(Text)  # xpub / zpub / ed25519 pubkey hex / direct: wallet address
+    mode: Mapped[str] = mapped_column(String(16))  # watch_only | managed | direct (one wallet, memo per deposit)
     signer_key_id: Mapped[str | None] = mapped_column(String(64))
     master_fingerprint: Mapped[str | None] = mapped_column(String(8))
     account_path: Mapped[str | None] = mapped_column(String(64))
@@ -198,6 +198,7 @@ class DepositAddress(Base):
     asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id"))
     address: Mapped[str] = mapped_column(String(128))  # canonical comparison form
     display_address: Mapped[str] = mapped_column(String(128))
+    memo: Mapped[str] = mapped_column(String(64), default="", server_default="")  # direct mode: required comment
     invoice_id: Mapped[str] = mapped_column(ForeignKey("invoices.id"), index=True)
     amount_due: Mapped[str] = mapped_column(Atomic)
     rate: Mapped[str | None] = mapped_column(String(64))  # price currency per 1 asset unit at quote time
@@ -210,7 +211,7 @@ class DepositAddress(Base):
     invoice: Mapped[Invoice] = relationship(back_populates="deposits")
     __table_args__ = (
         UniqueConstraint("keychain_id", "derivation_index", name="uq_deposit_derivation"),
-        UniqueConstraint("network", "address", name="uq_deposit_address"),
+        UniqueConstraint("network", "address", "memo", name="uq_deposit_address"),
         Index("ix_deposit_monitor", "network", "monitor_until"),
     )
 

@@ -8,21 +8,24 @@ claiming it.
 from __future__ import annotations
 
 import logging
+import os
 import secrets
+import time
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from .. import __version__
 from ..config import get_settings
-from ..db import get_db, utcnow
+from ..db import utcnow
 from ..models import User
 from ..security import constant_eq, hash_password, password_problems
 from ..services import audit, infra, settings as settings_svc, signer_client
 from ..services.rates import is_fiat
 from .auth import start_session, user_view
+from .deps import DB
 
 router = APIRouter(prefix="/api/setup", tags=["setup"])
 log = logging.getLogger("cryptus.setup")
@@ -35,8 +38,17 @@ def setup_token() -> str:
     p = s.data_dir / "setup-token"
     if not p.exists():
         s.data_dir.mkdir(parents=True, exist_ok=True)
-        p.write_text(secrets.token_urlsafe(18))
-    return p.read_text().strip()
+        try:  # several processes start at once (web workers, worker): exactly one creates the token
+            fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(secrets.token_urlsafe(18))
+        except FileExistsError:
+            pass
+    for _ in range(50):
+        if token := p.read_text().strip():
+            return token
+        time.sleep(0.02)  # another process created the file and is still writing it
+    raise RuntimeError(f"setup token file {p} is empty")
 
 
 def ensure_setup_token(db: Session) -> None:
@@ -50,7 +62,7 @@ def _has_owner(db: Session) -> bool:
 
 
 @router.get("/status")
-def status(db: Session = Depends(get_db)):
+def status(db: Session = DB):
     s = get_settings()
     try:
         db.execute(text("SELECT 1"))
@@ -83,7 +95,7 @@ class TokenIn(BaseModel):
 
 
 @router.post("/verify-token")
-def verify_token(body: TokenIn, db: Session = Depends(get_db)):
+def verify_token(body: TokenIn, db: Session = DB):
     if _has_owner(db):
         raise HTTPException(409, "setup has already been completed")
     if not constant_eq(body.token.strip(), setup_token()):
@@ -112,7 +124,7 @@ class CompleteIn(BaseModel):
 
 
 @router.post("/initialize")
-def initialize(body: CompleteIn, request: Request, response: Response, db: Session = Depends(get_db)):
+def initialize(body: CompleteIn, request: Request, response: Response, db: Session = DB):
     if _has_owner(db):
         raise HTTPException(409, "setup has already been completed")
     if not constant_eq(body.token.strip(), setup_token()):

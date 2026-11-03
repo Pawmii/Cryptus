@@ -34,6 +34,16 @@ from .base import AssetInfo, ChainAdapter, ChainError, Health, Observed, ScanRes
 MAINNET_GLOBAL_ID = -239
 TESTNET_GLOBAL_ID = -3
 
+DIRECT_PAGE = 100          # transactions per indexer request when following a merchant wallet
+DIRECT_MAX_PAGES = 10      # per account and pass; a backlog continues on the next pass
+DIRECT_CURSOR_LAG = 60     # seconds: the cursor never passes recent transactions, so a deposit created while a
+                           # pass is running still sees payments made right after it was issued
+MEMO_CLOCK_SKEW = 120      # seconds a payment may predate its deposit's creation timestamp
+
+
+class GetMethodFailed(ChainError):
+    """The contract ran but the get-method failed (missing method, not a wallet, ...)."""
+
 
 def norm(addr: str | None) -> str | None:
     if not addr:
@@ -49,6 +59,11 @@ def b64_to_hex(h: str) -> str:
         return base64.b64decode(h).hex()
     except Exception:
         return h
+
+
+def _body(tx: dict) -> Cell:
+    b64 = ((tx.get("in_msg") or {}).get("message_content") or {}).get("body")
+    return Cell.one_from_boc(base64.b64decode(b64)) if b64 else Cell.empty()
 
 
 def _stack_cell(entry) -> Cell:
@@ -91,7 +106,7 @@ class TonAdapter(ChainAdapter):
         body = self._req("POST", "/api/v2/runGetMethod", json={"address": address, "method": method, "stack": stack})
         res = body.get("result", body)
         if res.get("exit_code", 0) not in (0, 1):
-            raise ChainError(f"get-method {method} exited with {res.get('exit_code')}")
+            raise GetMethodFailed(f"get-method {method} exited with {res.get('exit_code')}")
         return res.get("stack", [])
 
     def mc_head(self) -> int:
@@ -153,79 +168,155 @@ class TonAdapter(ChainAdapter):
 
     def scan(self, items: list[WatchItem]) -> ScanResult:
         head = self.mc_head()
+        started = time.time()
         out: list[Observed] = []
         meta: dict[str, dict] = {}
+        accounts = dict((self.conf.cursor or {}).get("accounts") or {})
+        direct: dict[str, list[WatchItem]] = {}  # account to follow -> deposits identified by memo
         for item in items:
+            m = dict(item.meta)
+            if item.asset.kind != "native" and not m.get("jetton_wallet"):
+                m.update(self.prepare_deposit(item))
+                meta[item.deposit_id] = m
+            if m.get("memo"):
+                acct = item.address if item.asset.kind == "native" else m["jetton_wallet"]
+                direct.setdefault(acct, []).append(WatchItem(item.deposit_id, item.address, item.display_address,
+                                                             item.asset, m, item.exclude_senders))
+                continue
             if item.asset.kind == "native":
                 out += self._scan_native(item, head)
-            else:
-                m = dict(item.meta)
-                if not m.get("jetton_wallet"):
-                    m.update(self.prepare_deposit(item))
-                    meta[item.deposit_id] = m
-                obs = self._scan_jetton(item, m["jetton_wallet"], head)
-                if obs and not m.get("jetton_wallet_verified"):
-                    ok = self.verify_jetton_wallet(m["jetton_wallet"], item.address, item.asset.contract)
-                    if ok is False:
-                        for o in obs:
-                            o.detail["rejected"] = "jetton wallet owner/master mismatch"
-                    elif ok:
-                        m["jetton_wallet_verified"] = True
-                        meta[item.deposit_id] = m
-                out += obs
-        return ScanResult(out, {"mc_seqno": head}, head, meta)
+                continue
+            obs = self._scan_jetton(item, m["jetton_wallet"], head)
+            out += self._verify_jetton_obs([WatchItem(item.deposit_id, item.address, item.display_address,
+                                                      item.asset, m)], obs, meta)
+        for acct, group in direct.items():
+            obs = self._scan_direct(acct, group, head, accounts, started)
+            out += obs if group[0].asset.kind == "native" else self._verify_jetton_obs(group, obs, meta)
+        return ScanResult(out, {"mc_seqno": head, "accounts": accounts}, head, meta)
+
+    def _verify_jetton_obs(self, group: list[WatchItem], obs: list[Observed],
+                           meta: dict[str, dict]) -> list[Observed]:
+        """Before crediting, prove the receiving jetton wallet belongs to the owner and the verified master."""
+        first = group[0]
+        if not obs or first.meta.get("jetton_wallet_verified"):
+            return obs
+        ok = self.verify_jetton_wallet(first.meta["jetton_wallet"], first.address, first.asset.contract)
+        if ok is False:
+            for o in obs:
+                o.detail["rejected"] = "jetton wallet owner/master mismatch"
+        elif ok:
+            for it in group:
+                meta[it.deposit_id] = {**it.meta, **meta.get(it.deposit_id, {}), "jetton_wallet_verified": True}
+        return obs
+
+    @staticmethod
+    def _native_credit(tx: dict) -> tuple[int, str] | None:
+        """(credited value, sender) of an incoming internal transfer that stayed with the account."""
+        msg = tx.get("in_msg") or {}
+        src = norm(msg.get("source"))
+        if not src or msg.get("bounced"):
+            return None  # external message or a bounce of our own transfer
+        value = int(msg.get("value") or 0)
+        if value <= 0:
+            return None
+        d = tx.get("description", {})
+        bounce = d.get("bounce")
+        if isinstance(bounce, dict) and bounce.get("type") == "ok":
+            return None  # value was bounced back to the sender (a failed bounce leaves it with us)
+        credited = int((d.get("credit_ph") or {}).get("credit") or 0)
+        if credited <= 0:
+            return None
+        return min(value, credited), src
+
+    @staticmethod
+    def _jetton_credit(tx: dict, jetton_wallet: str) -> dict | None:
+        """Parsed ``internal_transfer`` that this jetton wallet executed successfully."""
+        msg = tx.get("in_msg") or {}
+        body_b64 = (msg.get("message_content") or {}).get("body")
+        if not body_b64 or not msg.get("source") or msg.get("bounced"):
+            return None
+        try:
+            parsed = ton_wallet.parse_jetton_internal_transfer(Cell.one_from_boc(base64.b64decode(body_b64)))
+        except Exception:
+            return None
+        if parsed is None or norm(tx.get("account")) != norm(jetton_wallet):
+            return None
+        d = tx.get("description", {})
+        if d.get("aborted") or not (d.get("compute_ph") or {}).get("success") \
+                or (d.get("action") or {}).get("success") is False:
+            return None  # transfer failed; no tokens were credited
+        return parsed
+
+    @staticmethod
+    def _observed(item: WatchItem, tx: dict, amount: int, sender: str | None, head: int, detail: dict) -> Observed:
+        seq = tx.get("mc_block_seqno")
+        return Observed(item.deposit_id, b64_to_hex(tx["hash"]), 0, item.asset.id, amount, sender,
+                        seq, str(tx.get("lt")), head - int(seq) + 1 if seq else 0, detail)
 
     def _scan_native(self, item: WatchItem, head: int) -> list[Observed]:
         out = []
         for tx in self._txs(item.address):
-            msg = tx.get("in_msg") or {}
-            src = norm(msg.get("source"))
-            if not src or msg.get("bounced"):
-                continue  # external message or a bounce of our own transfer
-            if src in item.exclude_senders:
-                continue  # gas top-up from our own gas wallet
-            value = int(msg.get("value") or 0)
-            if value <= 0:
-                continue
-            d = tx.get("description", {})
-            bounce = d.get("bounce")
-            if isinstance(bounce, dict) and bounce.get("type") == "ok":
-                continue  # value was bounced back to the sender (a failed bounce leaves it with us)
-            credited = int((d.get("credit_ph") or {}).get("credit") or 0)
-            if credited <= 0:
-                continue
-            value = min(value, credited)
-            seq = tx.get("mc_block_seqno")
-            out.append(Observed(item.deposit_id, b64_to_hex(tx["hash"]), 0, item.asset.id, value, src,
-                                seq, str(tx.get("lt")), head - int(seq) + 1 if seq else 0,
-                                {"lt": tx.get("lt"), "comment": self._comment(msg)}))
+            got = self._native_credit(tx)
+            if not got or got[1] in item.exclude_senders:
+                continue  # nothing credited, or a gas top-up from our own gas wallet
+            out.append(self._observed(item, tx, got[0], got[1], head,
+                                      {"lt": tx.get("lt"), "comment": self._comment(tx.get("in_msg") or {})}))
         return out
 
     def _scan_jetton(self, item: WatchItem, jetton_wallet: str, head: int) -> list[Observed]:
         out = []
         for tx in self._txs(jetton_wallet):
-            msg = tx.get("in_msg") or {}
-            body_b64 = (msg.get("message_content") or {}).get("body")
-            if not body_b64 or not msg.get("source") or msg.get("bounced"):
+            parsed = self._jetton_credit(tx, jetton_wallet)
+            if parsed is None or (parsed["from"] and norm(parsed["from"]) in item.exclude_senders):
                 continue
-            try:
-                parsed = ton_wallet.parse_jetton_internal_transfer(Cell.one_from_boc(base64.b64decode(body_b64)))
-            except Exception:
-                continue
-            if parsed is None:
-                continue
-            if norm(tx.get("account")) != norm(jetton_wallet):
-                continue
-            d = tx.get("description", {})
-            if d.get("aborted") or not (d.get("compute_ph") or {}).get("success") \
-                    or (d.get("action") or {}).get("success") is False:
-                continue  # transfer failed; no tokens were credited
-            if parsed["from"] and norm(parsed["from"]) in item.exclude_senders:
-                continue
-            seq = tx.get("mc_block_seqno")
-            out.append(Observed(item.deposit_id, b64_to_hex(tx["hash"]), 0, item.asset.id, int(parsed["amount"]),
-                                parsed["from"], seq, str(tx.get("lt")), head - int(seq) + 1 if seq else 0,
-                                {"jetton_wallet": jetton_wallet, "query_id": parsed["query_id"]}))
+            out.append(self._observed(item, tx, int(parsed["amount"]), parsed["from"], head,
+                                      {"jetton_wallet": jetton_wallet, "query_id": parsed["query_id"]}))
+        return out
+
+    def _scan_direct(self, account: str, group: list[WatchItem], head: int, accounts: dict[str, str],
+                     started: float) -> list[Observed]:
+        """Follow one merchant-owned account (wallet or its jetton wallet) and attribute transfers by memo.
+
+        Every invoice shares this account, so it is read in logical-time order from a persisted cursor rather
+        than as "the latest N transactions": nothing is skipped however busy the wallet is. Transfers without
+        a known memo are the merchant's own business and are ignored (the value is already in their wallet)."""
+        by_memo = {ton_wallet.normalize_memo(it.meta["memo"]): it for it in group}
+        since = min(int(it.meta.get("created_ts") or 0) for it in group) - MEMO_CLOCK_SKEW
+        params: dict = {"account": account, "sort": "asc", "limit": DIRECT_PAGE, "start_utime": max(0, since)}
+        if accounts.get(account):
+            params["start_lt"] = int(accounts[account]) + 1
+        native = group[0].asset.kind == "native"
+        out: list[Observed] = []
+        advancing = True
+        for _ in range(DIRECT_MAX_PAGES):
+            txs = self.v3("/transactions", **params).get("transactions", [])
+            for tx in txs:
+                if advancing and tx.get("mc_block_seqno") and int(tx.get("now") or 0) < started - DIRECT_CURSOR_LAG:
+                    accounts[account] = str(tx["lt"])
+                else:
+                    advancing = False  # re-read everything from here on during the next pass
+                if native:
+                    got = self._native_credit(tx)
+                    if not got:
+                        continue
+                    amount, sender = got
+                    text = ton_wallet.comment_of(_body(tx)) or self._comment(tx.get("in_msg") or {})
+                else:
+                    parsed = self._jetton_credit(tx, account)
+                    if not parsed:
+                        continue
+                    amount, sender, text = int(parsed["amount"]), parsed["from"], parsed["comment"]
+                memo = ton_wallet.normalize_memo(text)
+                item = by_memo.get(memo) if memo else None
+                if item is None or int(tx.get("now") or 0) < int(item.meta.get("created_ts") or 0) - MEMO_CLOCK_SKEW:
+                    continue  # not one of our open deposits (or sent before the memo was issued)
+                detail = {"lt": tx.get("lt"), "memo": item.meta["memo"]}
+                if not native:
+                    detail.update(jetton_wallet=account, query_id=parsed["query_id"])
+                out.append(self._observed(item, tx, amount, sender, head, detail))
+            if len(txs) < DIRECT_PAGE:
+                break
+            params["start_lt"] = int(txs[-1]["lt"]) + 1
         return out
 
     @staticmethod

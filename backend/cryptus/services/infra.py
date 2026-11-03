@@ -166,6 +166,9 @@ def test_network(db: Session, key: str) -> dict:
 
 def preview_addresses(kc: Keychain, network_key: str, n: int = 3) -> list[dict]:
     net = get_network(network_key)
+    if kc.mode == "direct":  # every invoice uses the same wallet; only the memo differs
+        d = derivation.ton_direct_wallet(kc.public_material, net)
+        return [{"index": 0, "path": d.path, "address": d.address}]
     out = []
     for i in range(n):
         d = derivation.derive_deposit(net, kc.public_material, i)
@@ -175,23 +178,29 @@ def preview_addresses(kc: Keychain, network_key: str, n: int = 3) -> list[dict]:
 
 def create_keychain(db: Session, actor: audit.Actor, *, family: str, scope: str, public_material: str, mode: str,
                     label: str, master_fingerprint: str | None = None, account_path: str | None = None) -> Keychain:
-    if mode not in ("watch_only", "managed"):
-        raise InfraError("mode must be watch_only or managed")
+    if mode not in ("watch_only", "managed", "direct"):
+        raise InfraError("mode must be watch_only, managed or direct")
     net = NETWORKS.get(scope) if family != "evm" else None
     if family in ("bitcoin", "ton") and (net is None or net.family != family):
         raise InfraError("scope must be a network of the same family")
     if family == "evm" and scope != "evm":
         raise InfraError("EVM keychains use scope 'evm' and serve every EVM network")
+    if mode == "direct" and family != "ton":
+        raise InfraError("direct receiving (one wallet + memo) is available on TON only")
     material = public_material.strip()
     try:
-        derivation.validate_public_material(family, material, net)
+        if mode == "direct":
+            material = derivation.parse_ton_wallet(material, net).to_str(is_user_friendly=False)
+            _check_direct_wallet(db, scope, material)
+        else:
+            derivation.validate_public_material(family, material, net)
     except derivation.DerivationError as exc:
         raise InfraError(str(exc)) from exc
     if family == "bitcoin":
         if not master_fingerprint or len(master_fingerprint) != 8:
             raise InfraError("Bitcoin keychains need the 8-hex-digit master fingerprint (for PSBT signing)")
         account_path = account_path or ("m/84'/0'/0'" if net.btc_network == "main" else "m/84'/1'/0'")
-    if family == "ton":
+    if family == "ton" and mode != "direct":
         material = material.lower().removeprefix("0x")
     if db.execute(select(Keychain).where(Keychain.family == family, Keychain.public_material == material)).first():
         raise InfraError("this key material is already registered")
@@ -201,6 +210,24 @@ def create_keychain(db: Session, actor: audit.Actor, *, family: str, scope: str,
     db.flush()
     audit.record(db, actor, "keychain.created", kc.id, family=family, scope=scope, mode=mode, label=kc.label)
     return kc
+
+
+def _check_direct_wallet(db: Session, network_key: str, raw_address: str) -> None:
+    """Refuse addresses that are contracts rather than wallets (e.g. a jetton wallet pasted by mistake).
+
+    Best effort: skipped when the network has no endpoint yet. A wallet that has never sent a transaction is
+    still uninitialised; payments to it are credited because checkout uses the non-bounceable form."""
+    from ..chains.base import NotConfigured
+    from ..chains.ton import GetMethodFailed
+    try:
+        ad = adapter_for(db, network_key)
+        if ad.account_state(raw_address)["state"] == "active":
+            ad.seqno(raw_address)
+    except GetMethodFailed as exc:
+        raise InfraError("this address is a smart contract, not a wallet — enter the address shown on your "
+                         "wallet's Receive screen") from exc
+    except (NotConfigured, ChainError):
+        pass
 
 
 def verify_keychain(db: Session, actor: audit.Actor, kc: Keychain, confirmed_address: str) -> None:
@@ -228,8 +255,10 @@ def attach_wallet(db: Session, actor: audit.Actor, network_key: str, keychain_id
     elif nw.keychain_id != kc.id:
         nw.keychain_id = kc.id
         nw.destination_confirmed_at = None
+    if kc.mode == "direct":  # funds already land in the merchant's wallet; consolidation does not apply
+        nw.destination, nw.destination_confirmed_at, nw.sweep_enabled = None, None, False
     db.flush()
-    audit.record(db, actor, "wallet.attached", network_key, keychain=kc.id)
+    audit.record(db, actor, "wallet.attached", network_key, keychain=kc.id, mode=kc.mode)
     return nw
 
 
@@ -237,9 +266,11 @@ def set_destination(db: Session, actor: audit.Actor, network_key: str, address: 
     nw = db.get(NetworkWallet, network_key)
     if nw is None:
         raise InfraError("attach a keychain first")
+    kc = db.get(Keychain, nw.keychain_id)
+    if address and kc.mode == "direct":
+        raise InfraError("direct receiving pays your wallet itself — there is nothing to consolidate")
     if address:
         addr = validate_address(network_key, address)
-        kc = db.get(Keychain, nw.keychain_id)
         for i in range(0, min(kc.next_index, 2000)):
             if derivation.normalize_address(kc.family, derivation.derive_deposit(get_network(network_key),
                                             kc.public_material, i).address) == \
@@ -257,7 +288,9 @@ def wallet_view(db: Session, nw: NetworkWallet, kc: Keychain | None) -> dict:
     from ..core.derivation import evm_gas_station, ton_gas_wallet
     net = NETWORKS[nw.network]
     gas = None
-    if kc and net.family == "evm":
+    if kc and kc.mode == "direct":
+        pass  # no deposit contracts, so no gas wallet
+    elif kc and net.family == "evm":
         gas = evm_gas_station(kc.public_material).address
     elif kc and net.family == "ton":
         gas = ton_gas_wallet(kc.public_material, net).address
@@ -269,12 +302,16 @@ def wallet_view(db: Session, nw: NetworkWallet, kc: Keychain | None) -> dict:
         "sweep_enabled": nw.sweep_enabled, "sweep_interval_minutes": nw.sweep_interval_minutes,
         "sweep_thresholds": nw.sweep_thresholds or {}, "max_fee": nw.max_fee or {},
         "gas_address": gas,
+        "receiving_address": derivation.ton_direct_wallet(kc.public_material, net).address
+        if kc and kc.mode == "direct" else None,
         "last_sweep_run_at": nw.last_sweep_run_at.isoformat() if nw.last_sweep_run_at else None,
     }
 
 
 def keychain_view(kc: Keychain) -> dict:
     m = kc.public_material
+    if kc.mode == "direct":  # stored raw; shown the way the merchant's wallet app shows it
+        m = derivation.ton_direct_wallet(m, NETWORKS[kc.scope]).address
     return {"id": kc.id, "family": kc.family, "scope": kc.scope, "label": kc.label, "mode": kc.mode,
             "public_material": m, "public_material_short": m[:12] + "…" + m[-8:] if len(m) > 24 else m,
             "master_fingerprint": kc.master_fingerprint, "account_path": kc.account_path,

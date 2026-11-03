@@ -6,15 +6,16 @@
 <p align="center"><b>Private Payments. Open Infrastructure.</b></p>
 
 CRYPTUS is a self-hosted, non-custodial cryptocurrency payment gateway. Merchants accept digital assets
-directly into wallets they control: every invoice gets its own deposit address, payments are detected and
-verified on-chain, and optional consolidation moves funds to a primary wallet under strict policy.
+directly into wallets they control: every invoice gets its own deposit address (or, on TON, a unique comment
+for payments straight to the merchant's own wallet), payments are detected and verified on-chain, and
+optional consolidation moves funds to a primary wallet under strict policy.
 
 | | |
 |---|---|
 | **Networks** | Bitcoin · TON (native **GRAM** + Jettons, incl. USDT Jetton) · Ethereum · BNB Smart Chain · Polygon · Arbitrum · Base — plus their testnets |
 | **Planned** | Litecoin · Dogecoin · TRON · Solana (shown as *planned*, never as operational) |
 | **Custody** | Watch-only by default (public keys only). Optional isolated signer for automated sweeps |
-| **Identification** | Unique deposit address per invoice — no memos, no shared addresses |
+| **Identification** | Unique deposit address per invoice. On TON, optionally **direct to your wallet** with a unique comment per invoice — no keys on the server, nothing to sweep |
 | **Privacy** | No payer accounts, no payer personal data, no third-party scripts or fonts on the checkout |
 | **Stack** | Python 3.11+ · FastAPI · SQLAlchemy/Alembic · PostgreSQL · React + TypeScript · Docker |
 
@@ -35,6 +36,8 @@ verified on-chain, and optional consolidation moves funds to a primary wallet un
 | Checkout: choose how to pay | Checkout: awaiting confirmations |
 |---|---|
 | ![Asset selection](docs/screenshots/22-checkout-choose-asset.png) | ![Payment detected, confirmations filling](docs/screenshots/23-checkout-awaiting.png) |
+| **TON: straight to your wallet** | **Checkout with the payment comment** |
+| ![Attach a TON wallet in direct mode](docs/screenshots/28-ton-direct-wallet.png) | ![Checkout showing address and required comment](docs/screenshots/29-checkout-ton-memo.png) |
 | **Invoice detail** | **Consolidation & emergency stop** |
 | ![Invoice detail](docs/screenshots/07-invoice-detail.png) | ![Consolidation](docs/screenshots/09-consolidation.png) |
 | **Networks** | **Installation wizard** |
@@ -81,16 +84,17 @@ and a test-mode API key to rehearse the whole flow with valueless coins.
 
 ## Production
 
+On a fresh Ubuntu/Debian server whose domain already points at it:
+
 ```bash
-cp deploy/.env.example deploy/.env       # set CRYPTUS_DOMAIN and passwords
-sh deploy/init-secrets.sh                # secret files for Docker secrets
-docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
-docker compose -f deploy/docker-compose.yml logs web | grep "Setup token"
+git clone https://github.com/Pawmii/Cryptus.git /opt/cryptus
+cd /opt/cryptus && sudo sh deploy/install.sh pay.example.com   # Docker, secrets, build, start, setup token
 ```
 
-Caddy terminates TLS automatically. Optional profiles: `--profile managed-signing` (isolated signer),
-`--profile bitcoind` (your own Bitcoin Core node). Read [docs/OPERATIONS.md](docs/OPERATIONS.md) before
-going live.
+**[docs/PRODUCTION.md](docs/PRODUCTION.md)** walks from there to the first real payment in your own TON
+wallet: wizard, wallet, 2FA, backups and shop integration. Caddy terminates TLS automatically.
+Optional profiles: `--profile managed-signing` (isolated signer), `--profile bitcoind` (your own Bitcoin
+Core node). Manual steps and runbooks are in [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ## Merchant API in one request
 
@@ -108,6 +112,7 @@ Full reference: [docs/API.md](docs/API.md) and the live OpenAPI docs at `/api/do
 
 | Document | Contents |
 |---|---|
+| [PRODUCTION](docs/PRODUCTION.md) | Going live step by step: server, install, TON wallet, 2FA, backups, shop integration |
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | Components, data model, invoice state machine, monitoring and reorg handling |
 | [WALLETS](docs/WALLETS.md) | Key ownership, derivation per chain, TON wallet design, consolidation, signer policy |
 | [SECURITY](docs/SECURITY.md) | Threat model, controls, hardening checklist |
